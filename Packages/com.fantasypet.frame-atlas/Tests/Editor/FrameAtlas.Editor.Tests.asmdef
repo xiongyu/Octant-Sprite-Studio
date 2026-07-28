@@ -1,0 +1,22 @@
+{
+  "name": "FrameAtlas.Editor.Tests",
+  "rootNamespace": "FrameAtlas.Tests",
+  "references": [
+    "FrameAtlas.Runtime",
+    "FrameAtlas.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ],
+  "noEngineReferences": false
+}
