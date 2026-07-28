@@ -20,9 +20,13 @@ import {
   PhPlay,
   PhScissors,
   PhSlidersHorizontal,
+  PhSquaresFour,
   PhStack,
+  PhTabs,
+  PhWaveSine,
 } from '@phosphor-icons/vue'
-import { createBuiltInActions, createImportedActions } from './assets'
+import { createBuiltInActions, createDefaultMotion, createImportedActions } from './assets'
+import DockLayout from './DockLayout.vue'
 
 const SOURCE_WIDTH = 836
 const SOURCE_HEIGHT = 480
@@ -34,6 +38,15 @@ const MIRROR_PAIR_CONFIGS = [
   { id: 'up-diagonal', label: '上斜向', leftId: 'up-left', rightId: 'up-right', leftLabel: '左上', rightLabel: '右上' },
   { id: 'down-diagonal', label: '下斜向', leftId: 'down-left', rightId: 'down-right', leftLabel: '左下', rightLabel: '右下' },
 ]
+const INSPECTOR_PANELS = [
+  { id: 'general', label: '常规' },
+  { id: 'motion', label: '动态' },
+]
+const INSPECTOR_PANEL_META = Object.fromEntries(
+  INSPECTOR_PANELS.map(({ id, label }) => [id, { id, label }]),
+)
+const INSPECTOR_PANEL_IDS = INSPECTOR_PANELS.map(({ id }) => id)
+let dockIdSequence = 0
 
 const canvasRef = ref(null)
 const fileInputRef = ref(null)
@@ -42,6 +55,7 @@ const exportPreviewCanvasRef = ref(null)
 const actions = reactive(createBuiltInActions())
 const activeId = ref('down')
 const frameIndex = ref(0)
+const motionTime = ref(0)
 const isPlaying = ref(false)
 const loop = ref(true)
 const zoom = ref(1)
@@ -57,17 +71,28 @@ const previewBytes = ref(0)
 const previewOriginalBytes = ref(0)
 const showOriginalPreview = ref(false)
 const thinInterval = ref(2)
+const dockLayout = ref(createDockPreset('tabs'))
+const dockWidth = ref(560)
+const dockRenderKey = ref(0)
+const dockDragState = reactive({
+  panelId: null,
+  sourceGroupId: null,
+  overGroupId: null,
+})
 const statusMessage = ref('已载入 8 个方向')
 const crop = reactive({ x: 314, y: 67, width: 198, height: 365 })
 const imageCache = new Map()
 const boundsCache = new Map()
 let playbackTimer = null
+let motionAnimationFrame = null
+let motionLastTimestamp = null
 let renderToken = 0
 let previewTimer = null
 let previewRenderToken = 0
 let rawPreviewCanvas = null
 let processedPreviewCanvas = null
 let interaction = null
+let stopDockWidthResize = null
 
 const activeAction = computed(() => actions.find((action) => action.id === activeId.value) || actions[0])
 const activeFps = computed({
@@ -116,6 +141,20 @@ const activeCollectionActions = computed(() =>
 )
 const activeCollectionName = computed(() => activeAction.value.collectionName || '当前素材组')
 const activeFrameOwner = computed(() => resolveFrameOwner(activeAction.value))
+const activeMotion = computed(() => activeAction.value.motion)
+const hasVisibleMotion = computed(() =>
+  visibleActions.value.some((action) => action.motion?.enabled),
+)
+const motionSummary = computed(() => {
+  const motion = activeMotion.value
+  if (!motion?.enabled) return '未启用'
+  const parts = []
+  if (motion.moveX) parts.push(`X ±${motion.moveX}px`)
+  if (motion.moveY) parts.push(`Y ±${motion.moveY}px`)
+  if (motion.rotation) parts.push(`旋转 ±${motion.rotation}°`)
+  if (motion.scale) parts.push(`缩放 ±${motion.scale}%`)
+  return parts.length ? parts.join(' · ') : '已启用，等待设置幅度'
+})
 const mirrorPolicyRows = computed(() =>
   MIRROR_PAIR_CONFIGS.map((pair) => {
     const left = activeCollectionActions.value.find((action) => action.directionId === pair.leftId)
@@ -282,6 +321,40 @@ function drawActionImage(ctx, image, action, x, y, width = image.naturalWidth, h
   ctx.restore()
 }
 
+function motionTransform(action, time = motionTime.value) {
+  const motion = action.motion
+  if (!motion?.enabled) {
+    return { x: 0, y: 0, rotation: 0, scale: 1 }
+  }
+  const duration = Math.max(0.2, Number(motion.duration) || 2.4)
+  const phase = ((Number(motion.phase) || 0) * Math.PI) / 180
+  const wave = Math.sin((time / duration) * Math.PI * 2 + phase)
+  return {
+    x: (Number(motion.moveX) || 0) * wave,
+    y: (Number(motion.moveY) || 0) * wave,
+    rotation: (Number(motion.rotation) || 0) * wave,
+    scale: 1 + ((Number(motion.scale) || 0) / 100) * wave,
+  }
+}
+
+function applyMotionTransform(ctx, action) {
+  const transform = motionTransform(action)
+  if (
+    transform.x === 0 &&
+    transform.y === 0 &&
+    transform.rotation === 0 &&
+    transform.scale === 1
+  ) {
+    return
+  }
+  const pivotX = crop.x + crop.width / 2
+  const pivotY = crop.y + crop.height
+  ctx.translate(pivotX + transform.x, pivotY + transform.y)
+  ctx.rotate((transform.rotation * Math.PI) / 180)
+  ctx.scale(transform.scale, transform.scale)
+  ctx.translate(-pivotX, -pivotY)
+}
+
 function drawCroppedAction(ctx, image, action, x, y, scale, outputWidth, outputHeight) {
   const owner = resolveFrameOwner(action)
   const sourceX = (owner.offsetX - crop.x) * scale
@@ -338,6 +411,7 @@ async function drawStage() {
       if (token !== renderToken) return
       ctx.save()
       ctx.globalAlpha = action.id === activeId.value ? 1 : action.opacity
+      applyMotionTransform(ctx, action)
       drawActionImage(ctx, image, action, owner.offsetX, owner.offsetY)
       ctx.restore()
     } catch {
@@ -496,6 +570,229 @@ function safeSheetValue(value) {
   return String(value || '').replace(/[;\r\n]/g, '_')
 }
 
+function nextDockId(prefix) {
+  dockIdSequence += 1
+  return `${prefix}-${Date.now()}-${dockIdSequence}`
+}
+
+function createDockGroup(tabs, active = tabs[0]) {
+  return {
+    type: 'group',
+    id: nextDockId('dock-group'),
+    tabs: [...tabs],
+    active: tabs.includes(active) ? active : tabs[0],
+  }
+}
+
+function createDockSplit(direction, first, second, ratio = 0.5) {
+  return {
+    type: 'split',
+    id: nextDockId('dock-split'),
+    direction,
+    ratio,
+    first,
+    second,
+  }
+}
+
+function createDockPreset(preset) {
+  if (preset === 'columns') {
+    return createDockSplit(
+      'horizontal',
+      createDockGroup(['general']),
+      createDockGroup(['motion']),
+      0.5,
+    )
+  }
+  if (preset === 'workspace') {
+    return createDockSplit(
+      'vertical',
+      createDockGroup(['general']),
+      createDockGroup(['motion']),
+      0.58,
+    )
+  }
+  return createDockGroup(INSPECTOR_PANEL_IDS, 'general')
+}
+
+function cloneDockLayout(layout) {
+  return JSON.parse(JSON.stringify(layout))
+}
+
+function findDockNode(node, nodeId) {
+  if (!node) return null
+  if (node.id === nodeId) return node
+  if (node.type !== 'split') return null
+  return findDockNode(node.first, nodeId) || findDockNode(node.second, nodeId)
+}
+
+function replaceDockNode(node, nodeId, replacement) {
+  if (node.id === nodeId) return replacement
+  if (node.type !== 'split') return node
+  node.first = replaceDockNode(node.first, nodeId, replacement)
+  node.second = replaceDockNode(node.second, nodeId, replacement)
+  return node
+}
+
+function removePanelFromDock(node, panelId) {
+  if (node.type === 'group') {
+    node.tabs = node.tabs.filter((id) => id !== panelId)
+    if (!node.tabs.length) return null
+    if (!node.tabs.includes(node.active)) node.active = node.tabs[0]
+    return node
+  }
+  node.first = removePanelFromDock(node.first, panelId)
+  node.second = removePanelFromDock(node.second, panelId)
+  if (!node.first) return node.second
+  if (!node.second) return node.first
+  return node
+}
+
+function collectDockPanelIds(node, target = []) {
+  if (!node) return target
+  if (node.type === 'group') {
+    target.push(...node.tabs)
+    return target
+  }
+  collectDockPanelIds(node.first, target)
+  collectDockPanelIds(node.second, target)
+  return target
+}
+
+function isValidDockLayout(layout) {
+  if (!layout || !['group', 'split'].includes(layout.type)) return false
+  const validateNode = (node) => {
+    if (!node || !node.id) return false
+    if (node.type === 'group') {
+      return (
+        Array.isArray(node.tabs) &&
+        node.tabs.length > 0 &&
+        node.tabs.every((id) => INSPECTOR_PANEL_IDS.includes(id)) &&
+        node.tabs.includes(node.active)
+      )
+    }
+    return (
+      node.type === 'split' &&
+      ['horizontal', 'vertical'].includes(node.direction) &&
+      Number.isFinite(node.ratio) &&
+      validateNode(node.first) &&
+      validateNode(node.second)
+    )
+  }
+  if (!validateNode(layout)) return false
+  const panelIds = collectDockPanelIds(layout)
+  return (
+    panelIds.length === INSPECTOR_PANEL_IDS.length &&
+    new Set(panelIds).size === INSPECTOR_PANEL_IDS.length &&
+    INSPECTOR_PANEL_IDS.every((id) => panelIds.includes(id))
+  )
+}
+
+function setDockPreset(preset) {
+  dockLayout.value = createDockPreset(preset)
+  dockRenderKey.value += 1
+  const labels = {
+    tabs: '常规与动态已合并为标签',
+    columns: '已切换为左右布局',
+    workspace: '已切换为上下布局',
+  }
+  statusMessage.value = labels[preset] || labels.tabs
+  persistState()
+}
+
+function activateDockPanel({ groupId, panelId }) {
+  const group = findDockNode(dockLayout.value, groupId)
+  if (group?.type === 'group' && group.tabs.includes(panelId)) group.active = panelId
+}
+
+function startDockDrag({ panelId, sourceGroupId }) {
+  dockDragState.panelId = panelId
+  dockDragState.sourceGroupId = sourceGroupId
+  dockDragState.overGroupId = sourceGroupId
+}
+
+function endDockDrag() {
+  dockDragState.panelId = null
+  dockDragState.sourceGroupId = null
+  dockDragState.overGroupId = null
+}
+
+function dropDockPanel({ panelId, sourceGroupId, targetGroupId, position }) {
+  if (!panelId || !targetGroupId) return
+  if (sourceGroupId === targetGroupId && position === 'center') {
+    activateDockPanel({ groupId: targetGroupId, panelId })
+    endDockDrag()
+    return
+  }
+
+  let nextLayout = cloneDockLayout(dockLayout.value)
+  const sourceGroup = findDockNode(nextLayout, sourceGroupId)
+  if (sourceGroup?.tabs.length === 1 && sourceGroupId === targetGroupId) {
+    endDockDrag()
+    return
+  }
+
+  nextLayout = removePanelFromDock(nextLayout, panelId)
+  const targetGroup = findDockNode(nextLayout, targetGroupId)
+  if (!targetGroup || targetGroup.type !== 'group') {
+    endDockDrag()
+    return
+  }
+
+  if (position === 'center') {
+    if (!targetGroup.tabs.includes(panelId)) targetGroup.tabs.push(panelId)
+    targetGroup.active = panelId
+  } else {
+    const incomingGroup = createDockGroup([panelId], panelId)
+    const direction = ['left', 'right'].includes(position) ? 'horizontal' : 'vertical'
+    const incomingFirst = ['left', 'top'].includes(position)
+    const split = createDockSplit(
+      direction,
+      incomingFirst ? incomingGroup : targetGroup,
+      incomingFirst ? targetGroup : incomingGroup,
+      0.5,
+    )
+    nextLayout = replaceDockNode(nextLayout, targetGroupId, split)
+  }
+
+  dockLayout.value = nextLayout
+  dockRenderKey.value += 1
+  const positionLabels = {
+    center: '合并为标签',
+    left: '停靠到左侧',
+    right: '停靠到右侧',
+    top: '停靠到上方',
+    bottom: '停靠到下方',
+  }
+  statusMessage.value = `${INSPECTOR_PANEL_META[panelId]?.label || panelId}已${positionLabels[position] || '重新停靠'}`
+  endDockDrag()
+  persistState()
+}
+
+function resizeDockSplit({ nodeId, ratio }) {
+  const split = findDockNode(dockLayout.value, nodeId)
+  if (split?.type === 'split') split.ratio = Math.round(clamp(ratio, 0.15, 0.85) * 1000) / 1000
+}
+
+function beginDockWidthResize(event) {
+  event.preventDefault()
+  document.body.classList.add('is-resizing-dock', 'is-resizing-dock-horizontal')
+  const onMove = (moveEvent) => {
+    const maximum = Math.max(360, Math.min(1200, window.innerWidth - 620))
+    dockWidth.value = Math.round(clamp(window.innerWidth - moveEvent.clientX, 360, maximum))
+  }
+  const onEnd = () => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onEnd)
+    document.body.classList.remove('is-resizing-dock', 'is-resizing-dock-horizontal')
+    stopDockWidthResize = null
+    persistState()
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onEnd, { once: true })
+  stopDockWidthResize = onEnd
+}
+
 function sanitizeCrop() {
   crop.width = Math.round(clamp(Number(crop.width) || MIN_CROP, MIN_CROP, SOURCE_WIDTH))
   crop.height = Math.round(clamp(Number(crop.height) || MIN_CROP, MIN_CROP, SOURCE_HEIGHT))
@@ -528,6 +825,91 @@ function restartPlayback() {
 function stopTimer() {
   if (playbackTimer) window.clearInterval(playbackTimer)
   playbackTimer = null
+}
+
+function stopMotionLoop() {
+  if (motionAnimationFrame) window.cancelAnimationFrame(motionAnimationFrame)
+  motionAnimationFrame = null
+  motionLastTimestamp = null
+}
+
+function motionTick(timestamp) {
+  if (!isPlaying.value || !hasVisibleMotion.value) {
+    stopMotionLoop()
+    return
+  }
+  if (motionLastTimestamp !== null) {
+    const delta = Math.min(0.05, Math.max(0, (timestamp - motionLastTimestamp) / 1000))
+    motionTime.value += delta
+  }
+  motionLastTimestamp = timestamp
+  drawStage()
+  motionAnimationFrame = window.requestAnimationFrame(motionTick)
+}
+
+function restartMotionLoop() {
+  stopMotionLoop()
+  if (isPlaying.value && hasVisibleMotion.value) {
+    motionAnimationFrame = window.requestAnimationFrame(motionTick)
+  }
+}
+
+function sanitizeMotion() {
+  const motion = activeMotion.value
+  if (!motion) return
+  motion.moveX = Math.round(clamp(Number(motion.moveX) || 0, 0, 240) * 10) / 10
+  motion.moveY = Math.round(clamp(Number(motion.moveY) || 0, 0, 240) * 10) / 10
+  motion.rotation = Math.round(clamp(Number(motion.rotation) || 0, 0, 45) * 10) / 10
+  motion.scale = Math.round(clamp(Number(motion.scale) || 0, 0, 50) * 10) / 10
+  motion.duration = Math.round(clamp(Number(motion.duration) || 2.4, 0.2, 20) * 10) / 10
+  motion.phase = Math.round(clamp(Number(motion.phase) || 0, 0, 360))
+  persistState()
+}
+
+function applyMotionPreset(preset) {
+  const presets = {
+    drift: { enabled: true, moveX: 12, moveY: 0, rotation: 0, scale: 0, duration: 3.2, phase: 0 },
+    float: { enabled: true, moveX: 0, moveY: 8, rotation: 0, scale: 0, duration: 2.6, phase: 0 },
+    sway: { enabled: true, moveX: 0, moveY: 0, rotation: 3.5, scale: 0, duration: 2.2, phase: 0 },
+    breathe: { enabled: true, moveX: 0, moveY: 0, rotation: 0, scale: 3, duration: 1.8, phase: 0 },
+  }
+  Object.assign(activeMotion.value, presets[preset] || createDefaultMotion())
+  motionTime.value = 0
+  statusMessage.value = preset === 'reset' ? '已清除当前动作动态' : `已应用动态预设：${activeAction.value.name}`
+  persistState()
+}
+
+function serializeMotion(action, scale = 1) {
+  const motion = action.motion || createDefaultMotion()
+  return {
+    enabled: Boolean(motion.enabled),
+    wave: 'sine',
+    pivot: { x: 0.5, y: 0 },
+    position: {
+      x: Math.round((Number(motion.moveX) || 0) * scale * 1000) / 1000,
+      y: Math.round((Number(motion.moveY) || 0) * scale * 1000) / 1000,
+    },
+    rotationDegrees: Number(motion.rotation) || 0,
+    scalePercent: Number(motion.scale) || 0,
+    durationSeconds: Number(motion.duration) || 2.4,
+    phaseDegrees: Number(motion.phase) || 0,
+  }
+}
+
+function createMotionManifest(targetActions, scale = 1) {
+  return {
+    schema: 'octant.motion.v1',
+    bakedIntoFrames: false,
+    units: 'output-pixels',
+    outputScale: Math.round(scale * 100),
+    actions: targetActions.map((action) => ({
+      id: action.id,
+      project: action.projectName,
+      character: action.characterName,
+      name: action.name,
+      ...serializeMotion(action, scale),
+    })),
+  }
 }
 
 function activateAction(action) {
@@ -1047,6 +1429,7 @@ async function exportSelected() {
               frames: framesForAction(action).length,
               mirroredFrom: action.mirroredFromName || null,
               bakedFlipX: Boolean(action.mirroredFromId),
+              motion: serializeMotion(action, scale),
             }
           }),
         },
@@ -1184,6 +1567,12 @@ async function exportUnityAtlas() {
     const owner = resolveFrameOwner(action)
     sheetLines.push(`# mirror;${action.id};${owner.id};flipX=true`)
   }
+  for (const action of selected.filter((item) => item.motion?.enabled)) {
+    const motion = serializeMotion(action, scale)
+    sheetLines.push(
+      `# motion;${safeSheetValue(action.id)};x=${motion.position.x};y=${motion.position.y};rotation=${motion.rotationDegrees};scale=${motion.scalePercent};duration=${motion.durationSeconds};phase=${motion.phaseDegrees};wave=sine;pivot=0.5,0`,
+    )
+  }
 
   statusMessage.value = `正在排版 ${physicalFrames.length} 个实体帧，${logicalFrames.length} 个逻辑帧`
 
@@ -1233,6 +1622,10 @@ async function exportUnityAtlas() {
     const zip = new JSZip()
     zip.file(textureName, pngBlob, { compression: 'STORE' })
     zip.file(sheetName, `${sheetLines.join('\n')}\n`)
+    zip.file(
+      `${atlasName}.motion.json`,
+      JSON.stringify(createMotionManifest(selected, scale), null, 2),
+    )
     const zipBlob = await zip.generateAsync(
       { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
       ({ percent }) => {
@@ -1266,12 +1659,15 @@ function persistState() {
     exportScale: exportScale.value,
     pngCompression: pngCompression.value,
     thinInterval: thinInterval.value,
+    dockLayout: cloneDockLayout(dockLayout.value),
+    dockWidth: dockWidth.value,
     actions: actions
       .filter((action) => !action.imported)
       .map(({
         id,
         offsetX,
         offsetY,
+        motion,
         fps,
         opacity,
         visible,
@@ -1290,6 +1686,7 @@ function persistState() {
         id,
         offsetX,
         offsetY,
+        motion: { ...createDefaultMotion(), ...(motion || {}) },
         fps,
         opacity,
         visible,
@@ -1322,6 +1719,14 @@ function restoreState() {
     exportScale.value = saved.exportScale || 100
     pngCompression.value = saved.pngCompression || 'lossless'
     thinInterval.value = saved.thinInterval || 2
+    dockLayout.value = isValidDockLayout(saved.dockLayout)
+      ? saved.dockLayout
+      : createDockPreset('tabs')
+    dockRenderKey.value += 1
+    const maximumDockWidth = Math.max(360, Math.min(1200, window.innerWidth - 620))
+    dockWidth.value = Math.round(
+      clamp(Number(saved.dockWidth) || 560, 360, maximumDockWidth),
+    )
     for (const item of saved.actions || []) {
       const action = actions.find((candidate) => candidate.id === item.id)
       if (action) {
@@ -1359,6 +1764,7 @@ function resetProject() {
     }
     action.offsetX = 0
     action.offsetY = 0
+    Object.assign(action.motion, createDefaultMotion())
     action.fps = DEFAULT_FPS
     action.visible = action.id === 'down'
     action.opacity = action.id === 'down' ? 1 : 0.3
@@ -1374,6 +1780,7 @@ function resetProject() {
   }
   activeId.value = 'down'
   frameIndex.value = 0
+  motionTime.value = 0
   exportScale.value = 100
   pngCompression.value = 'lossless'
   localStorage.removeItem(STORAGE_KEY)
@@ -1408,6 +1815,7 @@ function onKeydown(event) {
 }
 
 watch([isPlaying, activeFps, maxFrames], restartPlayback)
+watch([isPlaying, hasVisibleMotion], restartMotionLoop)
 watch(
   [
     frameIndex,
@@ -1422,6 +1830,13 @@ watch(
       action.frames.length,
       action.flipX,
       action.mirroredFromId,
+      action.motion?.enabled,
+      action.motion?.moveX,
+      action.motion?.moveY,
+      action.motion?.rotation,
+      action.motion?.scale,
+      action.motion?.duration,
+      action.motion?.phase,
     ]),
   ],
   () => {
@@ -1430,7 +1845,16 @@ watch(
   { deep: true },
 )
 watch(
-  [loop, stageBackground, showGuides, thinInterval, exportScale, pngCompression],
+  [
+    loop,
+    stageBackground,
+    showGuides,
+    thinInterval,
+    exportScale,
+    pngCompression,
+    dockWidth,
+    dockLayout,
+  ],
   () => persistState(),
   { deep: true },
 )
@@ -1453,6 +1877,7 @@ watch(
   { deep: true },
 )
 watch(showOriginalPreview, paintExportPreview)
+watch(dockRenderKey, () => nextTick(scheduleExportPreview))
 watch(
   () =>
     actions
@@ -1468,6 +1893,13 @@ watch(
         action.opacity,
         action.flipX,
         action.mirroredFromId,
+        action.motion?.enabled,
+        action.motion?.moveX,
+        action.motion?.moveY,
+        action.motion?.rotation,
+        action.motion?.scale,
+        action.motion?.duration,
+        action.motion?.phase,
         action.frames
           .map((frame) => action.sourceFrames.indexOf(frame))
           .join(','),
@@ -1485,6 +1917,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopTimer()
+  stopMotionLoop()
+  stopDockWidthResize?.()
   window.clearTimeout(previewTimer)
   window.removeEventListener('keydown', onKeydown)
   for (const action of actions.filter((item) => item.imported && !item.generatedMirror)) {
@@ -1538,7 +1972,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main class="workspace">
+    <main class="workspace" :style="{ '--dock-width': `${dockWidth}px` }">
       <aside class="sidebar action-panel">
         <div class="panel-heading">
           <div>
@@ -1651,6 +2085,7 @@ onBeforeUnmount(() => {
                       <div class="action-name-row">
                         <strong>{{ action.name }}</strong>
                         <span v-if="action.mirroredFromId" class="mirror-badge">镜像</span>
+                        <span v-if="action.motion?.enabled" class="motion-badge">动态</span>
                       </div>
                       <span>
                         {{ framesForAction(action).length }}
@@ -1797,7 +2232,49 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <aside class="sidebar inspector">
+      <div
+        class="dock-edge-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        title="拖拽调整停靠区域宽度"
+        @pointerdown="beginDockWidthResize"
+      ></div>
+
+      <aside class="sidebar inspector" aria-label="停靠面板工作区">
+        <div class="dock-toolbar">
+          <div class="dock-toolbar-title">
+            <strong>停靠面板</strong>
+            <span>拖动标签到上下左右或中央</span>
+          </div>
+          <div class="dock-layout-presets" aria-label="布局预设">
+            <button type="button" title="常规与动态合并为标签" @click="setDockPreset('tabs')">
+              <PhTabs :size="15" />
+              合并
+            </button>
+            <button type="button" title="常规与动态左右停靠" @click="setDockPreset('columns')">
+              <PhSquaresFour :size="15" />
+              左右
+            </button>
+            <button type="button" title="常规与动态上下停靠" @click="setDockPreset('workspace')">
+              <PhArrowCounterClockwise :size="15" />
+              上下
+            </button>
+          </div>
+        </div>
+
+        <DockLayout
+          :node="dockLayout"
+          :panel-meta="INSPECTOR_PANEL_META"
+          :drag-state="dockDragState"
+          @activate="activateDockPanel"
+          @drag-start="startDockDrag"
+          @drag-end="endDockDrag"
+          @drag-over="dockDragState.overGroupId = $event"
+          @drop-panel="dropDockPanel"
+          @resize-split="resizeDockSplit"
+        />
+
+        <Teleport :key="`dock-general-a-${dockRenderKey}`" defer to="#dock-panel-host-general">
         <section class="inspector-section">
           <div class="section-title">
             <div>
@@ -1852,7 +2329,6 @@ onBeforeUnmount(() => {
             <input v-model="showGuides" class="switch" type="checkbox" />
           </label>
         </section>
-
         <section class="inspector-section mirror-policy-section">
           <div class="section-title">
             <div>
@@ -1894,7 +2370,6 @@ onBeforeUnmount(() => {
             播放镜像方向时需要设置 SpriteRenderer.flipX。
           </p>
         </section>
-
         <section class="inspector-section export-settings-section">
           <div class="section-title">
             <div>
@@ -1995,7 +2470,6 @@ onBeforeUnmount(() => {
             {{ compressionDescription }} 只影响导出的 PNG 与图集，不会修改本地素材。
           </p>
         </section>
-
         <section class="inspector-section alignment-section">
           <div class="section-title">
             <div>
@@ -2047,7 +2521,77 @@ onBeforeUnmount(() => {
           </button>
           <button class="text-button" type="button" @click="resetOffsets">重置全部偏移</button>
         </section>
+        </Teleport>
 
+        <Teleport :key="`dock-motion-${dockRenderKey}`" defer to="#dock-panel-host-motion">
+        <section class="inspector-section motion-section">
+          <div class="section-title">
+            <div>
+              <span class="panel-kicker">运行时效果</span>
+              <strong>轻量动态修饰</strong>
+            </div>
+            <PhWaveSine :size="21" />
+          </div>
+
+          <label class="toggle-row motion-toggle">
+            <span>
+              <strong>启用当前动作</strong>
+              <small>{{ motionSummary }}</small>
+            </span>
+            <input v-model="activeMotion.enabled" class="switch" type="checkbox" />
+          </label>
+
+          <div class="motion-presets" aria-label="动态预设">
+            <button type="button" @click="applyMotionPreset('drift')">左右漂移</button>
+            <button type="button" @click="applyMotionPreset('float')">上下浮动</button>
+            <button type="button" @click="applyMotionPreset('sway')">轻微摇摆</button>
+            <button type="button" @click="applyMotionPreset('breathe')">呼吸缩放</button>
+          </div>
+
+          <div class="field-grid motion-field-grid">
+            <label>
+              <span>X 摆动 px</span>
+              <input v-model.number="activeMotion.moveX" type="number" min="0" max="240" step="0.5" @change="sanitizeMotion" />
+            </label>
+            <label>
+              <span>Y 摆动 px</span>
+              <input v-model.number="activeMotion.moveY" type="number" min="0" max="240" step="0.5" @change="sanitizeMotion" />
+            </label>
+            <label>
+              <span>旋转 °</span>
+              <input v-model.number="activeMotion.rotation" type="number" min="0" max="45" step="0.5" @change="sanitizeMotion" />
+            </label>
+            <label>
+              <span>缩放 %</span>
+              <input v-model.number="activeMotion.scale" type="number" min="0" max="50" step="0.5" @change="sanitizeMotion" />
+            </label>
+          </div>
+
+          <label class="motion-duration-field">
+            <span>
+              <span>单次周期</span>
+              <strong>{{ activeMotion.duration }} 秒</strong>
+            </span>
+            <input v-model.number="activeMotion.duration" type="range" min="0.2" max="8" step="0.1" @change="sanitizeMotion" />
+          </label>
+
+          <label class="motion-phase-field">
+            <span>起始相位</span>
+            <input v-model.number="activeMotion.phase" type="number" min="0" max="360" step="15" @change="sanitizeMotion" />
+            <span>°</span>
+          </label>
+
+          <p class="safe-operation-note motion-note">
+            与上方播放键同步预览，围绕底部中心点运动。动态写入 motion.json 与
+            .tpsheet，不会烘焙或增加 PNG 帧。
+          </p>
+          <button class="text-button motion-reset-button" type="button" @click="applyMotionPreset('reset')">
+            清除当前动作动态
+          </button>
+        </section>
+        </Teleport>
+
+        <Teleport :key="`dock-general-b-${dockRenderKey}`" defer to="#dock-panel-host-general">
         <section class="inspector-section thinning-section">
           <div class="section-title">
             <div>
@@ -2098,14 +2642,14 @@ onBeforeUnmount(() => {
           >
             恢复所选动作原始帧
           </button>
+          <div class="shortcut-note embedded-shortcuts">
+            <strong>键盘操作</strong>
+            <span><kbd>Space</kbd> 播放 / 暂停</span>
+            <span><kbd>←</kbd><kbd>→</kbd> 切帧</span>
+            <span><kbd>Shift</kbd> + 方向键 微调图层</span>
+          </div>
         </section>
-
-        <section class="shortcut-note">
-          <strong>键盘操作</strong>
-          <span><kbd>Space</kbd> 播放 / 暂停</span>
-          <span><kbd>←</kbd><kbd>→</kbd> 切帧</span>
-          <span><kbd>Shift</kbd> + 方向键 微调图层</span>
-        </section>
+        </Teleport>
       </aside>
     </main>
   </div>
