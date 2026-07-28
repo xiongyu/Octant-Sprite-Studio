@@ -26,6 +26,7 @@ import {
   PhWaveSine,
 } from '@phosphor-icons/vue'
 import { createBuiltInActions, createDefaultMotion, createImportedActions } from './assets'
+import DockLayout from './DockLayout.vue'
 
 const SOURCE_WIDTH = 836
 const SOURCE_HEIGHT = 480
@@ -37,7 +38,7 @@ const MIRROR_PAIR_CONFIGS = [
   { id: 'up-diagonal', label: '上斜向', leftId: 'up-left', rightId: 'up-right', leftLabel: '左上', rightLabel: '右上' },
   { id: 'down-diagonal', label: '下斜向', leftId: 'down-left', rightId: 'down-right', leftLabel: '左下', rightLabel: '右下' },
 ]
-const INSPECTOR_TABS = [
+const INSPECTOR_PANELS = [
   { id: 'crop', label: '裁剪', icon: PhFrameCorners },
   { id: 'alignment', label: '对齐', icon: PhCrosshairSimple },
   { id: 'motion', label: '动态', icon: PhWaveSine },
@@ -45,6 +46,11 @@ const INSPECTOR_TABS = [
   { id: 'export', label: '导出', icon: PhSlidersHorizontal },
   { id: 'thinning', label: '减帧', icon: PhScissors },
 ]
+const INSPECTOR_PANEL_META = Object.fromEntries(
+  INSPECTOR_PANELS.map(({ id, label }) => [id, { id, label }]),
+)
+const INSPECTOR_PANEL_IDS = INSPECTOR_PANELS.map(({ id }) => id)
+let dockIdSequence = 0
 
 const canvasRef = ref(null)
 const fileInputRef = ref(null)
@@ -69,8 +75,14 @@ const previewBytes = ref(0)
 const previewOriginalBytes = ref(0)
 const showOriginalPreview = ref(false)
 const thinInterval = ref(2)
-const inspectorMode = ref('tabs')
-const activeInspectorTab = ref('crop')
+const dockLayout = ref(createDockPreset('tabs'))
+const dockWidth = ref(560)
+const dockRenderKey = ref(0)
+const dockDragState = reactive({
+  panelId: null,
+  sourceGroupId: null,
+  overGroupId: null,
+})
 const statusMessage = ref('已载入 8 个方向')
 const crop = reactive({ x: 314, y: 67, width: 198, height: 365 })
 const imageCache = new Map()
@@ -84,6 +96,7 @@ let previewRenderToken = 0
 let rawPreviewCanvas = null
 let processedPreviewCanvas = null
 let interaction = null
+let stopDockWidthResize = null
 
 const activeAction = computed(() => actions.find((action) => action.id === activeId.value) || actions[0])
 const activeFps = computed({
@@ -561,22 +574,228 @@ function safeSheetValue(value) {
   return String(value || '').replace(/[;\r\n]/g, '_')
 }
 
-function selectInspectorTab(tabId) {
-  activeInspectorTab.value = tabId
-  if (inspectorMode.value !== 'tiled') return
-  nextTick(() => {
-    const pane = document.querySelector(`[data-inspector-pane="${tabId}"]`)
-    pane?.scrollIntoView({
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-      block: 'nearest',
-      inline: 'start',
-    })
-  })
+function nextDockId(prefix) {
+  dockIdSequence += 1
+  return `${prefix}-${Date.now()}-${dockIdSequence}`
 }
 
-function setInspectorMode(mode) {
-  inspectorMode.value = mode === 'tiled' ? 'tiled' : 'tabs'
-  if (inspectorMode.value === 'tiled') selectInspectorTab(activeInspectorTab.value)
+function createDockGroup(tabs, active = tabs[0]) {
+  return {
+    type: 'group',
+    id: nextDockId('dock-group'),
+    tabs: [...tabs],
+    active: tabs.includes(active) ? active : tabs[0],
+  }
+}
+
+function createDockSplit(direction, first, second, ratio = 0.5) {
+  return {
+    type: 'split',
+    id: nextDockId('dock-split'),
+    direction,
+    ratio,
+    first,
+    second,
+  }
+}
+
+function createDockPreset(preset) {
+  if (preset === 'columns') {
+    return createDockSplit(
+      'horizontal',
+      createDockGroup(['crop', 'alignment', 'motion'], 'crop'),
+      createDockGroup(['mirror', 'export', 'thinning'], 'export'),
+      0.5,
+    )
+  }
+  if (preset === 'workspace') {
+    return createDockSplit(
+      'horizontal',
+      createDockGroup(['crop', 'alignment'], 'crop'),
+      createDockSplit(
+        'vertical',
+        createDockGroup(['motion', 'mirror'], 'motion'),
+        createDockGroup(['export', 'thinning'], 'export'),
+        0.48,
+      ),
+      0.48,
+    )
+  }
+  return createDockGroup(INSPECTOR_PANEL_IDS, 'crop')
+}
+
+function cloneDockLayout(layout) {
+  return JSON.parse(JSON.stringify(layout))
+}
+
+function findDockNode(node, nodeId) {
+  if (!node) return null
+  if (node.id === nodeId) return node
+  if (node.type !== 'split') return null
+  return findDockNode(node.first, nodeId) || findDockNode(node.second, nodeId)
+}
+
+function replaceDockNode(node, nodeId, replacement) {
+  if (node.id === nodeId) return replacement
+  if (node.type !== 'split') return node
+  node.first = replaceDockNode(node.first, nodeId, replacement)
+  node.second = replaceDockNode(node.second, nodeId, replacement)
+  return node
+}
+
+function removePanelFromDock(node, panelId) {
+  if (node.type === 'group') {
+    node.tabs = node.tabs.filter((id) => id !== panelId)
+    if (!node.tabs.length) return null
+    if (!node.tabs.includes(node.active)) node.active = node.tabs[0]
+    return node
+  }
+  node.first = removePanelFromDock(node.first, panelId)
+  node.second = removePanelFromDock(node.second, panelId)
+  if (!node.first) return node.second
+  if (!node.second) return node.first
+  return node
+}
+
+function collectDockPanelIds(node, target = []) {
+  if (!node) return target
+  if (node.type === 'group') {
+    target.push(...node.tabs)
+    return target
+  }
+  collectDockPanelIds(node.first, target)
+  collectDockPanelIds(node.second, target)
+  return target
+}
+
+function isValidDockLayout(layout) {
+  if (!layout || !['group', 'split'].includes(layout.type)) return false
+  const validateNode = (node) => {
+    if (!node || !node.id) return false
+    if (node.type === 'group') {
+      return (
+        Array.isArray(node.tabs) &&
+        node.tabs.length > 0 &&
+        node.tabs.every((id) => INSPECTOR_PANEL_IDS.includes(id)) &&
+        node.tabs.includes(node.active)
+      )
+    }
+    return (
+      node.type === 'split' &&
+      ['horizontal', 'vertical'].includes(node.direction) &&
+      Number.isFinite(node.ratio) &&
+      validateNode(node.first) &&
+      validateNode(node.second)
+    )
+  }
+  if (!validateNode(layout)) return false
+  const panelIds = collectDockPanelIds(layout)
+  return (
+    panelIds.length === INSPECTOR_PANEL_IDS.length &&
+    new Set(panelIds).size === INSPECTOR_PANEL_IDS.length &&
+    INSPECTOR_PANEL_IDS.every((id) => panelIds.includes(id))
+  )
+}
+
+function setDockPreset(preset) {
+  dockLayout.value = createDockPreset(preset)
+  dockRenderKey.value += 1
+  const labels = { tabs: '全部面板已合并为标签', columns: '已切换为双列布局', workspace: '已恢复工作台布局' }
+  statusMessage.value = labels[preset] || labels.tabs
+  persistState()
+}
+
+function activateDockPanel({ groupId, panelId }) {
+  const group = findDockNode(dockLayout.value, groupId)
+  if (group?.type === 'group' && group.tabs.includes(panelId)) group.active = panelId
+}
+
+function startDockDrag({ panelId, sourceGroupId }) {
+  dockDragState.panelId = panelId
+  dockDragState.sourceGroupId = sourceGroupId
+  dockDragState.overGroupId = sourceGroupId
+}
+
+function endDockDrag() {
+  dockDragState.panelId = null
+  dockDragState.sourceGroupId = null
+  dockDragState.overGroupId = null
+}
+
+function dropDockPanel({ panelId, sourceGroupId, targetGroupId, position }) {
+  if (!panelId || !targetGroupId) return
+  if (sourceGroupId === targetGroupId && position === 'center') {
+    activateDockPanel({ groupId: targetGroupId, panelId })
+    endDockDrag()
+    return
+  }
+
+  let nextLayout = cloneDockLayout(dockLayout.value)
+  const sourceGroup = findDockNode(nextLayout, sourceGroupId)
+  if (sourceGroup?.tabs.length === 1 && sourceGroupId === targetGroupId) {
+    endDockDrag()
+    return
+  }
+
+  nextLayout = removePanelFromDock(nextLayout, panelId)
+  const targetGroup = findDockNode(nextLayout, targetGroupId)
+  if (!targetGroup || targetGroup.type !== 'group') {
+    endDockDrag()
+    return
+  }
+
+  if (position === 'center') {
+    if (!targetGroup.tabs.includes(panelId)) targetGroup.tabs.push(panelId)
+    targetGroup.active = panelId
+  } else {
+    const incomingGroup = createDockGroup([panelId], panelId)
+    const direction = ['left', 'right'].includes(position) ? 'horizontal' : 'vertical'
+    const incomingFirst = ['left', 'top'].includes(position)
+    const split = createDockSplit(
+      direction,
+      incomingFirst ? incomingGroup : targetGroup,
+      incomingFirst ? targetGroup : incomingGroup,
+      0.5,
+    )
+    nextLayout = replaceDockNode(nextLayout, targetGroupId, split)
+  }
+
+  dockLayout.value = nextLayout
+  dockRenderKey.value += 1
+  const positionLabels = {
+    center: '合并为标签',
+    left: '停靠到左侧',
+    right: '停靠到右侧',
+    top: '停靠到上方',
+    bottom: '停靠到下方',
+  }
+  statusMessage.value = `${INSPECTOR_PANEL_META[panelId]?.label || panelId}已${positionLabels[position] || '重新停靠'}`
+  endDockDrag()
+  persistState()
+}
+
+function resizeDockSplit({ nodeId, ratio }) {
+  const split = findDockNode(dockLayout.value, nodeId)
+  if (split?.type === 'split') split.ratio = Math.round(clamp(ratio, 0.15, 0.85) * 1000) / 1000
+}
+
+function beginDockWidthResize(event) {
+  event.preventDefault()
+  document.body.classList.add('is-resizing-dock', 'is-resizing-dock-horizontal')
+  const onMove = (moveEvent) => {
+    const maximum = Math.max(360, Math.min(1200, window.innerWidth - 620))
+    dockWidth.value = Math.round(clamp(window.innerWidth - moveEvent.clientX, 360, maximum))
+  }
+  const onEnd = () => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onEnd)
+    document.body.classList.remove('is-resizing-dock', 'is-resizing-dock-horizontal')
+    stopDockWidthResize = null
+    persistState()
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onEnd, { once: true })
+  stopDockWidthResize = onEnd
 }
 
 function sanitizeCrop() {
@@ -1445,8 +1664,8 @@ function persistState() {
     exportScale: exportScale.value,
     pngCompression: pngCompression.value,
     thinInterval: thinInterval.value,
-    inspectorMode: inspectorMode.value,
-    activeInspectorTab: activeInspectorTab.value,
+    dockLayout: cloneDockLayout(dockLayout.value),
+    dockWidth: dockWidth.value,
     actions: actions
       .filter((action) => !action.imported)
       .map(({
@@ -1505,10 +1724,14 @@ function restoreState() {
     exportScale.value = saved.exportScale || 100
     pngCompression.value = saved.pngCompression || 'lossless'
     thinInterval.value = saved.thinInterval || 2
-    inspectorMode.value = saved.inspectorMode === 'tiled' ? 'tiled' : 'tabs'
-    activeInspectorTab.value = INSPECTOR_TABS.some((tab) => tab.id === saved.activeInspectorTab)
-      ? saved.activeInspectorTab
-      : 'crop'
+    dockLayout.value = isValidDockLayout(saved.dockLayout)
+      ? saved.dockLayout
+      : createDockPreset('tabs')
+    dockRenderKey.value += 1
+    const maximumDockWidth = Math.max(360, Math.min(1200, window.innerWidth - 620))
+    dockWidth.value = Math.round(
+      clamp(Number(saved.dockWidth) || 560, 360, maximumDockWidth),
+    )
     for (const item of saved.actions || []) {
       const action = actions.find((candidate) => candidate.id === item.id)
       if (action) {
@@ -1634,8 +1857,8 @@ watch(
     thinInterval,
     exportScale,
     pngCompression,
-    inspectorMode,
-    activeInspectorTab,
+    dockWidth,
+    dockLayout,
   ],
   () => persistState(),
   { deep: true },
@@ -1659,6 +1882,7 @@ watch(
   { deep: true },
 )
 watch(showOriginalPreview, paintExportPreview)
+watch(dockRenderKey, () => nextTick(scheduleExportPreview))
 watch(
   () =>
     actions
@@ -1699,6 +1923,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopTimer()
   stopMotionLoop()
+  stopDockWidthResize?.()
   window.clearTimeout(previewTimer)
   window.removeEventListener('keydown', onKeydown)
   for (const action of actions.filter((item) => item.imported && !item.generatedMirror)) {
@@ -1752,7 +1977,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main class="workspace" :class="{ 'inspector-tiled': inspectorMode === 'tiled' }">
+    <main class="workspace" :style="{ '--dock-width': `${dockWidth}px` }">
       <aside class="sidebar action-panel">
         <div class="panel-heading">
           <div>
@@ -2012,61 +2237,50 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <aside
-        class="sidebar inspector"
-        :class="{ 'is-tiled': inspectorMode === 'tiled' }"
-        aria-label="功能检查器"
-      >
-        <div class="inspector-dockbar">
-          <div class="inspector-dock-title">
-            <strong>检查器</strong>
-            <span>{{ inspectorMode === 'tiled' ? '平铺视图' : '标签视图' }}</span>
+      <div
+        class="dock-edge-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        title="拖拽调整停靠区域宽度"
+        @pointerdown="beginDockWidthResize"
+      ></div>
+
+      <aside class="sidebar inspector" aria-label="停靠面板工作区">
+        <div class="dock-toolbar">
+          <div class="dock-toolbar-title">
+            <strong>停靠面板</strong>
+            <span>拖动标签到上下左右或中央</span>
           </div>
-          <div class="inspector-view-switch" aria-label="检查器显示模式">
-            <button
-              type="button"
-              :class="{ active: inspectorMode === 'tabs' }"
-              :aria-pressed="inspectorMode === 'tabs'"
-              title="单标签显示"
-              @click="setInspectorMode('tabs')"
-            >
+          <div class="dock-layout-presets" aria-label="布局预设">
+            <button type="button" title="全部合并为标签" @click="setDockPreset('tabs')">
               <PhTabs :size="15" />
-              标签
+              合并
             </button>
-            <button
-              type="button"
-              :class="{ active: inspectorMode === 'tiled' }"
-              :aria-pressed="inspectorMode === 'tiled'"
-              title="横向平铺全部面板"
-              @click="setInspectorMode('tiled')"
-            >
+            <button type="button" title="双列停靠布局" @click="setDockPreset('columns')">
               <PhSquaresFour :size="15" />
-              平铺
+              双列
             </button>
-          </div>
-          <div class="inspector-tabs" role="tablist" aria-label="检查器功能">
-            <button
-              v-for="tab in INSPECTOR_TABS"
-              :key="tab.id"
-              type="button"
-              role="tab"
-              :class="{ active: activeInspectorTab === tab.id }"
-              :aria-selected="activeInspectorTab === tab.id"
-              @click="selectInspectorTab(tab.id)"
-            >
-              <component :is="tab.icon" :size="14" />
-              {{ tab.label }}
+            <button type="button" title="左右加上下分割布局" @click="setDockPreset('workspace')">
+              <PhArrowCounterClockwise :size="15" />
+              工作台
             </button>
           </div>
         </div>
 
-        <div class="inspector-content">
-        <section
-          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'crop'"
-          class="inspector-section inspector-pane"
-          data-inspector-pane="crop"
-          role="tabpanel"
-        >
+        <DockLayout
+          :node="dockLayout"
+          :panel-meta="INSPECTOR_PANEL_META"
+          :drag-state="dockDragState"
+          @activate="activateDockPanel"
+          @drag-start="startDockDrag"
+          @drag-end="endDockDrag"
+          @drag-over="dockDragState.overGroupId = $event"
+          @drop-panel="dropDockPanel"
+          @resize-split="resizeDockSplit"
+        />
+
+        <Teleport :key="`dock-crop-${dockRenderKey}`" defer to="#dock-panel-host-crop">
+        <section class="inspector-section">
           <div class="section-title">
             <div>
               <span class="panel-kicker">输出区域</span>
@@ -2120,13 +2334,10 @@ onBeforeUnmount(() => {
             <input v-model="showGuides" class="switch" type="checkbox" />
           </label>
         </section>
+        </Teleport>
 
-        <section
-          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'mirror'"
-          class="inspector-section inspector-pane mirror-policy-section"
-          data-inspector-pane="mirror"
-          role="tabpanel"
-        >
+        <Teleport :key="`dock-mirror-${dockRenderKey}`" defer to="#dock-panel-host-mirror">
+        <section class="inspector-section mirror-policy-section">
           <div class="section-title">
             <div>
               <span class="panel-kicker">资源复用</span>
@@ -2167,13 +2378,10 @@ onBeforeUnmount(() => {
             播放镜像方向时需要设置 SpriteRenderer.flipX。
           </p>
         </section>
+        </Teleport>
 
-        <section
-          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'export'"
-          class="inspector-section inspector-pane export-settings-section"
-          data-inspector-pane="export"
-          role="tabpanel"
-        >
+        <Teleport :key="`dock-export-${dockRenderKey}`" defer to="#dock-panel-host-export">
+        <section class="inspector-section export-settings-section">
           <div class="section-title">
             <div>
               <span class="panel-kicker">导出处理</span>
@@ -2273,13 +2481,10 @@ onBeforeUnmount(() => {
             {{ compressionDescription }} 只影响导出的 PNG 与图集，不会修改本地素材。
           </p>
         </section>
+        </Teleport>
 
-        <section
-          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'alignment'"
-          class="inspector-section inspector-pane alignment-section"
-          data-inspector-pane="alignment"
-          role="tabpanel"
-        >
+        <Teleport :key="`dock-alignment-${dockRenderKey}`" defer to="#dock-panel-host-alignment">
+        <section class="inspector-section alignment-section">
           <div class="section-title">
             <div>
               <span class="panel-kicker">当前动作</span>
@@ -2330,13 +2535,10 @@ onBeforeUnmount(() => {
           </button>
           <button class="text-button" type="button" @click="resetOffsets">重置全部偏移</button>
         </section>
+        </Teleport>
 
-        <section
-          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'motion'"
-          class="inspector-section inspector-pane motion-section"
-          data-inspector-pane="motion"
-          role="tabpanel"
-        >
+        <Teleport :key="`dock-motion-${dockRenderKey}`" defer to="#dock-panel-host-motion">
+        <section class="inspector-section motion-section">
           <div class="section-title">
             <div>
               <span class="panel-kicker">运行时效果</span>
@@ -2401,13 +2603,10 @@ onBeforeUnmount(() => {
             清除当前动作动态
           </button>
         </section>
+        </Teleport>
 
-        <section
-          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'thinning'"
-          class="inspector-section inspector-pane thinning-section"
-          data-inspector-pane="thinning"
-          role="tabpanel"
-        >
+        <Teleport :key="`dock-thinning-${dockRenderKey}`" defer to="#dock-panel-host-thinning">
+        <section class="inspector-section thinning-section">
           <div class="section-title">
             <div>
               <span class="panel-kicker">非破坏性处理</span>
@@ -2464,7 +2663,7 @@ onBeforeUnmount(() => {
             <span><kbd>Shift</kbd> + 方向键 微调图层</span>
           </div>
         </section>
-        </div>
+        </Teleport>
       </aside>
     </main>
   </div>
