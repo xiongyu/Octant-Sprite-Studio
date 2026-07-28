@@ -158,6 +158,64 @@ left_001;105;2;99;183;0.5;0
 
 图集内 Sprite 的 pivot 为底部中心 `(0.5, 0)`。如果图集超过 Unity 默认纹理尺寸，请提高 Texture Import Settings 中的 `Max Size`，或在导出前降低缩放比例。
 
+## Unity Package
+
+仓库内置标准 Unity Package：
+[`Packages/com.fantasypet.frame-atlas`](./Packages/com.fantasypet.frame-atlas)。
+它包含运行时数据模型、严格的 `.tpsheet` 解析器、播放器，以及可选的
+Unity Editor `ScriptedImporter`。支持 Unity 2022.3 和团结引擎 1.9.2，
+不依赖具体游戏业务代码。
+
+关键文件：
+
+- [Package 接入说明](./Packages/com.fantasypet.frame-atlas/README.md)
+- [运行时解析器](./Packages/com.fantasypet.frame-atlas/Runtime/Parsing/FrameAtlasTpsheetParser.cs)
+- [Package 配置](./Packages/com.fantasypet.frame-atlas/package.json)
+
+### 安装到 Unity 项目
+
+1. 将整个 `Packages/com.fantasypet.frame-atlas` 文件夹复制到目标 Unity
+   项目的 `Packages/` 目录。
+2. 在业务程序集的 `.asmdef` 中引用 `FrameAtlas.Runtime`。
+3. 只有需要扩展编辑器导入功能时，才引用 `FrameAtlas.Editor`。
+4. 将编辑器导出的 `.png` 与 `.tpsheet` 放在同一目录。Unity 会通过
+   `ScriptedImporter` 生成 `FrameAtlasAsset` 和稳定的 Sprite 子资源。
+
+### 运行时解析
+
+需要直接读取 `.tpsheet` 文本时：
+
+```csharp
+using FrameAtlas.Parsing;
+
+var document = FrameAtlasTpsheetParser.Parse(content, fileName);
+foreach (var frame in document.Frames)
+{
+    UnityEngine.Debug.Log(
+        $"{frame.ActionId} #{frame.FrameNumber}: {frame.ToUnityRect(document.Height)}");
+}
+```
+
+解析入口的完整名称：
+
+```csharp
+FrameAtlas.Parsing.FrameAtlasTpsheetParser.Parse(content, fileName)
+```
+
+### 播放已导入图集
+
+```csharp
+using FrameAtlas;
+
+public FrameAtlasAsset atlas;
+
+void Start()
+{
+    var frames = atlas.GetFrames("walk");
+    var fps = atlas.GetFramesPerSecond("walk");
+}
+```
+
 ## 快捷键
 
 | 快捷键 | 操作 |
