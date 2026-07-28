@@ -8,7 +8,7 @@
 
 > 中文名：逐格
 
-一个本地优先的多方向 PNG 序列帧工作台，用于管理人物动作、播放预览、裁剪留白、中心校准、非破坏性减帧、方向镜像以及 Unity 图集导出。
+一个本地优先的多方向 PNG 序列帧工作台，用于管理人物动作、播放预览、裁剪留白、中心校准、非破坏性减帧、方向镜像、轻量动态修饰以及 Unity 图集导出。
 
 ## 运行界面
 
@@ -50,6 +50,13 @@
 - 即使左右素材都存在，也能主动选择一侧作为镜像源，以减少图集体积。
 - 上、下方向不会互相镜像。
 - Unity 图集只写入实体纹理帧，镜像动作通过 `flipX` 配置复用已有区域。
+
+### 轻量动态修饰
+
+- 为每个动作独立设置水平/垂直摆动、旋转、呼吸缩放、周期和起始相位。
+- 内置左右漂移、上下浮动、轻微摇摆、呼吸缩放四种预设。
+- 动态以正弦曲线围绕 Sprite 底部中心点播放，与序列帧共用播放控制。
+- 动态不会烘焙进 PNG；Unity 图集额外导出 `character_walk.motion.json`，并在 `.tpsheet` 中写入 `# motion` 元数据。
 
 ### 导出
 
@@ -128,6 +135,7 @@ npm run preview
 ```text
 character_walk.png
 character_walk.tpsheet
+character_walk.motion.json
 ```
 
 `.tpsheet` 使用 TexturePacker 风格的文本切片格式，并扩展了项目、动作 FPS 和镜像元数据：
@@ -142,6 +150,7 @@ character_walk.tpsheet
 # action;down;默认项目;主角;下行走;fps=12
 # action;left;默认项目;主角;左行走;fps=8
 # mirror;right;left;flipX=true
+# motion;down;x=12;y=0;rotation=0;scale=0;duration=3.2;phase=0;wave=sine;pivot=0.5,0
 down_001;2;2;99;183;0.5;0
 left_001;105;2;99;183;0.5;0
 ```
@@ -152,6 +161,7 @@ left_001;105;2;99;183;0.5;0
 - `:action-fps=动作ID;帧率`：动作独立 FPS，Unity 解析时应优先使用。
 - `# action`：动作 ID、项目名、人物名、动作名和 FPS。
 - `# mirror`：目标动作、源动作和水平翻转标记。
+- `# motion`：运行时位移、旋转、缩放、周期、相位、波形和 Pivot；位移单位为缩放后的输出像素。
 - 普通帧行：名称、X、Y、宽、高、Pivot X、Pivot Y。
 
 该文件用于自定义 Unity 解析库。官方 TexturePacker Importer 可能会校验文件来源并拒绝手写 `.tpsheet`，因此不要依赖官方插件直接导入。

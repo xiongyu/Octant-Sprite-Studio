@@ -19,6 +19,18 @@ const mirrorPairs = [
   ['down-left', 'down-right'],
 ]
 
+export function createDefaultMotion() {
+  return {
+    enabled: false,
+    moveX: 0,
+    moveY: 0,
+    rotation: 0,
+    scale: 0,
+    duration: 2.4,
+    phase: 0,
+  }
+}
+
 export function detectDirectionId(name) {
   const value = String(name || '').toLowerCase()
   const compact = value.replace(/[\s_.-]+/g, '')
@@ -78,6 +90,7 @@ export function createMissingMirroredActions(sourceActions, batchId = `mirror-${
       frames: [...source.frames],
       offsetX: source.offsetX,
       offsetY: source.offsetY,
+      motion: createDefaultMotion(),
       fps: source.fps,
       opacity: 0.3,
       visible: false,
@@ -114,6 +127,7 @@ export function createBuiltInActions() {
       frames: [...sourceFrames],
       offsetX: 0,
       offsetY: 0,
+      motion: createDefaultMotion(),
       fps: 12,
       opacity: id === 'down' ? 1 : 0.3,
       visible: id === 'down',
@@ -183,6 +197,7 @@ export function createImportedActions(fileList) {
       frames: [...sourceFrames],
       offsetX: 0,
       offsetY: 0,
+      motion: createDefaultMotion(),
       fps: 12,
       opacity: 0.3,
       visible: false,
