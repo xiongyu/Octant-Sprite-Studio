@@ -31,6 +31,7 @@
 - 项目与人物支持折叠和重命名。
 - 不同项目、人物中的同名动作彼此独立。
 - 每个动作可单独设置 FPS、位置偏移和叠加透明度。
+- 每个人物可定义一个由全部方向共用的脚底锚点，可在画布上点选或按当前帧估算。
 - 多个动作可同时显示，用半透明叠加方式校正人物中心。
 - 右侧检查器收敛为“常规”和“动态”两个停靠面板；裁剪、对齐、镜像、导出与减帧集中在常规面板中。
 - 两个面板可拖拽合并为标签，或停靠到目标面板的上、下、左、右。
@@ -58,7 +59,7 @@
 
 - 为每个动作独立设置水平/垂直摆动、旋转、呼吸缩放、周期和起始相位。
 - 内置左右漂移、上下浮动、轻微摇摆、呼吸缩放四种预设。
-- 动态以正弦曲线围绕 Sprite 底部中心点播放，与序列帧共用播放控制。
+- 动态以正弦曲线围绕人物脚底锚点播放，与序列帧共用播放控制。
 - 动态不会烘焙进 PNG；Unity 图集额外导出 `character_walk.motion.json`，并在 `.tpsheet` 中写入 `# motion` 元数据。
 
 ### 导出
@@ -70,6 +71,7 @@
 - 支持无损、轻度、中度、高度四档 PNG 压缩。
 - 实时预览缩放、压缩效果和单帧体积。
 - 每个动作的独立 FPS、项目归属和镜像关系都会写入导出配置。
+- 脚底锚点会写入 `crop.json`、`.tpsheet` 的 `# anchor` 元数据和每帧 Pivot。
 
 ## 快速开始
 
@@ -151,11 +153,12 @@ character_walk.motion.json
 :action-fps=down;12
 :action-fps=left;8
 # action;down;默认项目;主角;下行走;fps=12
+# anchor;down;x=49.5;y=172;space=output-pixels;origin=top-left;pivot=0.5,0.060109
 # action;left;默认项目;主角;左行走;fps=8
 # mirror;right;left;flipX=true
-# motion;down;x=12;y=0;rotation=0;scale=0;duration=3.2;phase=0;wave=sine;pivot=0.5,0
-down_001;2;2;99;183;0.5;0
-left_001;105;2;99;183;0.5;0
+# motion;down;x=12;y=0;rotation=0;scale=0;duration=3.2;phase=0;wave=sine;pivot=0.5,0.060109
+down_001;2;2;99;183;0.5;0.060109
+left_001;105;2;99;183;0.5;0.060109
 ```
 
 字段说明：
@@ -164,12 +167,16 @@ left_001;105;2;99;183;0.5;0
 - `:action-fps=动作ID;帧率`：动作独立 FPS，Unity 解析时应优先使用。
 - `# action`：动作 ID、项目名、人物名、动作名和 FPS。
 - `# mirror`：目标动作、源动作和水平翻转标记。
+- `# anchor`：动作脚底点的输出像素坐标、坐标系和 Unity 归一化 Pivot。
 - `# motion`：运行时位移、旋转、缩放、周期、相位、波形和 Pivot；位移单位为缩放后的输出像素。
 - 普通帧行：名称、X、Y、宽、高、Pivot X、Pivot Y。
 
 该文件用于自定义 Unity 解析库。官方 TexturePacker Importer 可能会校验文件来源并拒绝手写 `.tpsheet`，因此不要依赖官方插件直接导入。
 
-图集内 Sprite 的 pivot 为底部中心 `(0.5, 0)`。如果图集超过 Unity 默认纹理尺寸，请提高 Texture Import Settings 中的 `Max Size`，或在导出前降低缩放比例。
+图集内 Sprite 的 Pivot 来自人物脚底锚点。脚底坐标使用输出帧左上角像素坐标，
+导出时会自动换算为 Unity 左下角归一化 Pivot。所选人物缺少脚底定义，或锚点落在
+裁剪框外时，编辑器会阻止 Unity 图集导出。如果图集超过 Unity 默认纹理尺寸，请
+提高 Texture Import Settings 中的 `Max Size`，或在导出前降低缩放比例。
 
 ## Unity Package
 

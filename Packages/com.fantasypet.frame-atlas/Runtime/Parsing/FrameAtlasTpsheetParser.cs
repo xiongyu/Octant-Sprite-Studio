@@ -130,6 +130,37 @@ namespace FrameAtlas.Parsing
     }
 
     /// <summary>
+    /// 一个动作在输出帧中的显式脚底锚点。
+    /// 像素坐标以帧左上角为原点，Pivot 使用 Unity 左下角归一化坐标。
+    /// </summary>
+    public sealed class FrameAtlasTpsheetAnchorRecord
+    {
+        internal FrameAtlasTpsheetAnchorRecord(
+            string actionId,
+            Vector2 pixelPosition,
+            Vector2 normalizedPivot,
+            int lineNumber)
+        {
+            ActionId = actionId;
+            PixelPosition = pixelPosition;
+            NormalizedPivot = normalizedPivot;
+            LineNumber = lineNumber;
+        }
+
+        /// <summary>规范化后的动作 ID。</summary>
+        public string ActionId { get; private set; }
+
+        /// <summary>输出帧左上角坐标系中的脚底像素位置。</summary>
+        public Vector2 PixelPosition { get; private set; }
+
+        /// <summary>Unity 左下角坐标系中的归一化 Pivot。</summary>
+        public Vector2 NormalizedPivot { get; private set; }
+
+        /// <summary>该记录在源文件中的一基行号。</summary>
+        public int LineNumber { get; private set; }
+    }
+
+    /// <summary>
     /// 完整且经过验证的 `.tpsheet` 文档。
     /// </summary>
     public sealed class FrameAtlasTpsheetDocument
@@ -140,6 +171,7 @@ namespace FrameAtlas.Parsing
             int height,
             float defaultFramesPerSecond,
             List<FrameAtlasTpsheetActionFpsRecord> actionFramesPerSecond,
+            List<FrameAtlasTpsheetAnchorRecord> actionAnchors,
             List<FrameAtlasTpsheetFrameRecord> frames,
             List<FrameAtlasTpsheetMirrorRecord> mirrorMappings)
         {
@@ -148,6 +180,7 @@ namespace FrameAtlas.Parsing
             Height = height;
             DefaultFramesPerSecond = defaultFramesPerSecond;
             ActionFramesPerSecond = actionFramesPerSecond;
+            ActionAnchors = actionAnchors;
             Frames = frames;
             MirrorMappings = mirrorMappings;
         }
@@ -167,6 +200,13 @@ namespace FrameAtlas.Parsing
         /// <summary>全部显式 `:action-fps` 声明。</summary>
         public IReadOnlyList<FrameAtlasTpsheetActionFpsRecord>
             ActionFramesPerSecond
+        {
+            get;
+            private set;
+        }
+
+        /// <summary>全部显式脚底锚点声明。</summary>
+        public IReadOnlyList<FrameAtlasTpsheetAnchorRecord> ActionAnchors
         {
             get;
             private set;
@@ -227,10 +267,14 @@ namespace FrameAtlas.Parsing
             var mirrors = new List<FrameAtlasTpsheetMirrorRecord>();
             var actionFramesPerSecond =
                 new List<FrameAtlasTpsheetActionFpsRecord>();
+            var actionAnchors =
+                new List<FrameAtlasTpsheetAnchorRecord>();
             var frameNames = new HashSet<string>(StringComparer.Ordinal);
             var mirrorTargets =
                 new HashSet<string>(StringComparer.Ordinal);
             var actionFpsIds =
+                new HashSet<string>(StringComparer.Ordinal);
+            var anchorActionIds =
                 new HashSet<string>(StringComparer.Ordinal);
             var textureFileName = string.Empty;
             var atlasWidth = 0;
@@ -260,6 +304,8 @@ namespace FrameAtlas.Parsing
                             lineNumber,
                             mirrors,
                             mirrorTargets,
+                            actionAnchors,
+                            anchorActionIds,
                             errors);
                         continue;
                     }
@@ -299,6 +345,7 @@ namespace FrameAtlas.Parsing
                 frames,
                 mirrors,
                 actionFramesPerSecond,
+                actionAnchors,
                 errors);
 
             if (errors.Count > 0)
@@ -312,6 +359,7 @@ namespace FrameAtlas.Parsing
                 atlasHeight,
                 defaultFramesPerSecond,
                 actionFramesPerSecond,
+                actionAnchors,
                 frames,
                 mirrors);
         }
@@ -472,9 +520,25 @@ namespace FrameAtlas.Parsing
             int lineNumber,
             List<FrameAtlasTpsheetMirrorRecord> mirrors,
             HashSet<string> mirrorTargets,
+            List<FrameAtlasTpsheetAnchorRecord> anchors,
+            HashSet<string> anchorActionIds,
             List<string> errors)
         {
             var comment = line.Substring(1).Trim();
+            if (comment.StartsWith(
+                    "anchor;",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                ParseAnchor(
+                    comment,
+                    fileName,
+                    lineNumber,
+                    anchors,
+                    anchorActionIds,
+                    errors);
+                return;
+            }
+
             if (!comment.StartsWith("mirror;", StringComparison.OrdinalIgnoreCase))
             {
                 return;
@@ -528,6 +592,84 @@ namespace FrameAtlas.Parsing
                 target,
                 source,
                 flipX,
+                lineNumber));
+        }
+
+        private static void ParseAnchor(
+            string comment,
+            string fileName,
+            int lineNumber,
+            List<FrameAtlasTpsheetAnchorRecord> anchors,
+            HashSet<string> anchorActionIds,
+            List<string> errors)
+        {
+            var values = comment.Split(';');
+            if (values.Length != 7)
+            {
+                AddError(
+                    errors,
+                    fileName,
+                    lineNumber,
+                    "anchor 注释必须有 7 个字段。");
+                return;
+            }
+
+            var actionId = FrameAtlasAsset.NormalizeActionId(values[1]);
+            float pixelX;
+            float pixelY;
+            float pivotX;
+            float pivotY;
+            if (string.IsNullOrEmpty(actionId) ||
+                !TryParsePrefixedFloat(values[2], "x=", out pixelX) ||
+                !TryParsePrefixedFloat(values[3], "y=", out pixelY) ||
+                !string.Equals(
+                    values[4].Trim(),
+                    "space=output-pixels",
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    values[5].Trim(),
+                    "origin=top-left",
+                    StringComparison.OrdinalIgnoreCase) ||
+                !TryParsePivot(values[6], out pivotX, out pivotY))
+            {
+                AddError(
+                    errors,
+                    fileName,
+                    lineNumber,
+                    "anchor 格式应为 # anchor;动作;x=像素;y=像素;" +
+                    "space=output-pixels;origin=top-left;pivot=x,y。");
+                return;
+            }
+
+            if (pixelX < 0f ||
+                pixelY < 0f ||
+                pivotX < 0f ||
+                pivotX > 1f ||
+                pivotY < 0f ||
+                pivotY > 1f)
+            {
+                AddError(
+                    errors,
+                    fileName,
+                    lineNumber,
+                    "anchor 像素不能为负数，pivot 必须位于 0～1。");
+                return;
+            }
+
+            if (!anchorActionIds.Add(actionId))
+            {
+                AddError(
+                    errors,
+                    fileName,
+                    lineNumber,
+                    "脚底锚点重复：" + actionId);
+                return;
+            }
+
+            anchors.Add(new FrameAtlasTpsheetAnchorRecord(
+                actionId,
+                new Vector2(pixelX, pixelY),
+                new Vector2(pivotX, pivotY),
                 lineNumber));
         }
 
@@ -620,6 +762,7 @@ namespace FrameAtlas.Parsing
             List<FrameAtlasTpsheetFrameRecord> frames,
             List<FrameAtlasTpsheetMirrorRecord> mirrors,
             List<FrameAtlasTpsheetActionFpsRecord> actionFramesPerSecond,
+            List<FrameAtlasTpsheetAnchorRecord> actionAnchors,
             List<string> errors)
         {
             if (string.IsNullOrEmpty(textureFileName))
@@ -726,6 +869,77 @@ namespace FrameAtlas.Parsing
                         settings.ActionId);
                 }
             }
+
+            const float AnchorTolerance = 0.001f;
+            for (var anchorIndex = 0;
+                 anchorIndex < actionAnchors.Count;
+                 anchorIndex++)
+            {
+                var anchor = actionAnchors[anchorIndex];
+                if (!actions.Contains(anchor.ActionId))
+                {
+                    AddError(
+                        errors,
+                        fileName,
+                        anchor.LineNumber,
+                        "脚底锚点对应的实体动作不存在：" +
+                        anchor.ActionId);
+                    continue;
+                }
+
+                for (var frameIndex = 0;
+                     frameIndex < frames.Count;
+                     frameIndex++)
+                {
+                    var frame = frames[frameIndex];
+                    if (frame.ActionId != anchor.ActionId)
+                    {
+                        continue;
+                    }
+
+                    if (anchor.PixelPosition.x > frame.Width ||
+                        anchor.PixelPosition.y > frame.Height)
+                    {
+                        AddError(
+                            errors,
+                            fileName,
+                            anchor.LineNumber,
+                            "脚底锚点超出动作帧范围：" +
+                            anchor.ActionId);
+                        break;
+                    }
+
+                    var expectedPivot = new Vector2(
+                        anchor.PixelPosition.x / frame.Width,
+                        (frame.Height - anchor.PixelPosition.y) /
+                        frame.Height);
+                    if (Mathf.Abs(
+                            expectedPivot.x -
+                            anchor.NormalizedPivot.x) >
+                        AnchorTolerance ||
+                        Mathf.Abs(
+                            expectedPivot.y -
+                            anchor.NormalizedPivot.y) >
+                        AnchorTolerance ||
+                        Mathf.Abs(
+                            frame.Pivot.x -
+                            anchor.NormalizedPivot.x) >
+                        AnchorTolerance ||
+                        Mathf.Abs(
+                            frame.Pivot.y -
+                            anchor.NormalizedPivot.y) >
+                        AnchorTolerance)
+                    {
+                        AddError(
+                            errors,
+                            fileName,
+                            anchor.LineNumber,
+                            "脚底锚点、声明 Pivot 与帧 Pivot 不一致：" +
+                            anchor.ActionId);
+                        break;
+                    }
+                }
+            }
         }
 
         private static bool TryParseFrameName(
@@ -780,6 +994,43 @@ namespace FrameAtlas.Parsing
                        out result) &&
                    !float.IsNaN(result) &&
                    !float.IsInfinity(result);
+        }
+
+        private static bool TryParsePrefixedFloat(
+            string value,
+            string prefix,
+            out float result)
+        {
+            result = 0f;
+            var trimmed = value.Trim();
+            return trimmed.StartsWith(
+                       prefix,
+                       StringComparison.OrdinalIgnoreCase) &&
+                   TryParseFloat(
+                       trimmed.Substring(prefix.Length),
+                       out result);
+        }
+
+        private static bool TryParsePivot(
+            string value,
+            out float pivotX,
+            out float pivotY)
+        {
+            pivotX = 0f;
+            pivotY = 0f;
+            var trimmed = value.Trim();
+            const string Prefix = "pivot=";
+            if (!trimmed.StartsWith(
+                    Prefix,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var parts = trimmed.Substring(Prefix.Length).Split(',');
+            return parts.Length == 2 &&
+                   TryParseFloat(parts[0], out pivotX) &&
+                   TryParseFloat(parts[1], out pivotY);
         }
 
         private static bool TryParsePositiveFloat(

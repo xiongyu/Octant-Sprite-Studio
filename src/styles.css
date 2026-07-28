@@ -764,6 +764,17 @@ input[type="range"] {
   background: #d8d9d3;
 }
 
+.canvas-wrap.defining-foot-anchor {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 3px rgb(213 255 83 / 10%),
+    0 18px 60px rgb(0 0 0 / 32%);
+}
+
+.canvas-wrap.defining-foot-anchor canvas {
+  cursor: crosshair;
+}
+
 canvas {
   position: absolute;
   inset: 0;
@@ -791,6 +802,16 @@ canvas {
 .source-label {
   top: 8px;
   left: 8px;
+}
+
+.anchor-mode-label {
+  top: 8px;
+  left: 50%;
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent);
+  font-weight: 750;
+  transform: translateX(-50%);
 }
 
 .crop-label {
@@ -1355,6 +1376,103 @@ body.is-resizing-dock * {
   color: var(--accent);
   font-size: 9px;
   line-height: 1.5;
+}
+
+.foot-anchor-editor {
+  margin-bottom: 16px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #141512;
+}
+
+.foot-anchor-editor.defined {
+  border-color: rgb(213 255 83 / 34%);
+  background: rgb(213 255 83 / 4%);
+}
+
+.foot-anchor-editor.invalid {
+  border-color: rgb(255 131 111 / 55%);
+  background: rgb(255 131 111 / 5%);
+}
+
+.foot-anchor-heading,
+.foot-anchor-readout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.foot-anchor-heading {
+  margin-bottom: 11px;
+}
+
+.foot-anchor-heading strong,
+.foot-anchor-heading small {
+  display: block;
+}
+
+.foot-anchor-heading strong {
+  color: #d7dad2;
+  font-size: 11px;
+}
+
+.foot-anchor-heading small {
+  margin-top: 3px;
+  color: #747a6f;
+  font-size: 9px;
+}
+
+.anchor-status {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: #8d9387;
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.foot-anchor-editor.defined .anchor-status {
+  border-color: rgb(213 255 83 / 35%);
+  color: var(--accent);
+}
+
+.foot-anchor-editor.invalid .anchor-status {
+  border-color: rgb(255 131 111 / 45%);
+  color: var(--danger);
+}
+
+.foot-anchor-fields {
+  margin-bottom: 8px;
+}
+
+.foot-anchor-fields label {
+  grid-template-columns: 52px minmax(0, 1fr);
+}
+
+.foot-anchor-readout {
+  margin-bottom: 10px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: #7f8579;
+  background: #11120f;
+  font-size: 9px;
+}
+
+.foot-anchor-readout strong {
+  color: var(--accent);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.foot-anchor-clear {
+  margin-top: 2px;
+  color: var(--danger);
+}
+
+.foot-anchor-note {
+  margin-bottom: 0;
 }
 
 .export-settings-section {

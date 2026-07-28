@@ -160,6 +160,20 @@ namespace FrameAtlas.Editor
                         mapping.FlipX));
                 }
 
+                var actionAnchors =
+                    new List<FrameAtlasActionAnchor>(
+                        document.ActionAnchors.Count);
+                for (var i = 0;
+                     i < document.ActionAnchors.Count;
+                     i++)
+                {
+                    var anchor = document.ActionAnchors[i];
+                    actionAnchors.Add(new FrameAtlasActionAnchor(
+                        anchor.ActionId,
+                        anchor.PixelPosition,
+                        anchor.NormalizedPivot));
+                }
+
                 var atlas =
                     ScriptableObject.CreateInstance<FrameAtlasAsset>();
                 atlas.name =
@@ -172,6 +186,7 @@ namespace FrameAtlas.Editor
                     runtimeFrames,
                     actionIndices,
                     actionSettings,
+                    actionAnchors,
                     mirrorMappings);
 
                 context.AddObjectToAsset("frame-atlas-main", atlas);

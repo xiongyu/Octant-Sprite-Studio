@@ -26,6 +26,11 @@ import {
   PhWaveSine,
 } from '@phosphor-icons/vue'
 import { createBuiltInActions, createDefaultMotion, createImportedActions } from './assets'
+import {
+  clampFootAnchor,
+  formatTpsheetNumber,
+  toExportedFootAnchor,
+} from './footAnchor'
 import DockLayout from './DockLayout.vue'
 
 const SOURCE_WIDTH = 836
@@ -61,6 +66,7 @@ const loop = ref(true)
 const zoom = ref(1)
 const stageBackground = ref('checker')
 const showGuides = ref(true)
+const footAnchorEditMode = ref(false)
 const analysisProgress = ref(0)
 const exportProgress = ref(0)
 const exportKind = ref('')
@@ -140,6 +146,10 @@ const activeCollectionActions = computed(() =>
   actions.filter((action) => action.collectionId === activeAction.value.collectionId),
 )
 const activeCollectionName = computed(() => activeAction.value.collectionName || '当前素材组')
+const activeFootAnchor = computed(() => footAnchorForAction(activeAction.value))
+const activeFootAnchorInsideCrop = computed(() =>
+  footAnchorIsInsideCrop(activeFootAnchor.value),
+)
 const activeFrameOwner = computed(() => resolveFrameOwner(activeAction.value))
 const activeMotion = computed(() => activeAction.value.motion)
 const hasVisibleMotion = computed(() =>
@@ -196,6 +206,47 @@ const scaledCrop = computed(() => ({
   width: Math.max(1, Math.round(crop.width * exportScaleFactor.value)),
   height: Math.max(1, Math.round(crop.height * exportScaleFactor.value)),
 }))
+const activeExportedFootAnchor = computed(() =>
+  toExportedFootAnchor(
+    activeFootAnchor.value,
+    crop,
+    exportScaleFactor.value,
+    scaledCrop.value.width,
+    scaledCrop.value.height,
+  ),
+)
+const footAnchorOutputX = computed({
+  get: () => activeExportedFootAnchor.value?.pixel.x ?? '',
+  set: (value) => {
+    if (value === '' || value === null) return
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return
+    const current = activeFootAnchor.value || {
+      x: crop.x + crop.width / 2,
+      y: crop.y + crop.height,
+    }
+    setActiveCollectionFootAnchor({
+      x: crop.x + numeric / exportScaleFactor.value,
+      y: current.y,
+    })
+  },
+})
+const footAnchorOutputY = computed({
+  get: () => activeExportedFootAnchor.value?.pixel.y ?? '',
+  set: (value) => {
+    if (value === '' || value === null) return
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return
+    const current = activeFootAnchor.value || {
+      x: crop.x + crop.width / 2,
+      y: crop.y + crop.height,
+    }
+    setActiveCollectionFootAnchor({
+      x: current.x,
+      y: crop.y + numeric / exportScaleFactor.value,
+    })
+  },
+})
 const compressionColorCount = computed(
   () =>
     ({
@@ -239,6 +290,66 @@ function resolveFrameOwner(action) {
     owner = source
   }
   return owner || action
+}
+
+function footAnchorForAction(action) {
+  if (!action) return null
+  const collectionId = action.collectionId || action.characterId
+  const anchorOwner = actions.find(
+    (candidate) =>
+      (candidate.collectionId || candidate.characterId) === collectionId &&
+      candidate.footAnchor,
+  )
+  return anchorOwner?.footAnchor || null
+}
+
+function setActiveCollectionFootAnchor(anchor) {
+  if (!activeAction.value) return
+  const next = clampFootAnchor(anchor, crop)
+  const collectionId = activeAction.value.collectionId || activeAction.value.characterId
+  for (const action of actions.filter(
+    (candidate) =>
+      (candidate.collectionId || candidate.characterId) === collectionId,
+  )) {
+    action.footAnchor = {
+      x: Math.round(next.x * 1000) / 1000,
+      y: Math.round(next.y * 1000) / 1000,
+    }
+  }
+}
+
+function exportedFootAnchorForAction(action, scale = exportScaleFactor.value) {
+  return toExportedFootAnchor(
+    footAnchorForAction(action),
+    crop,
+    scale,
+    Math.max(1, Math.round(crop.width * scale)),
+    Math.max(1, Math.round(crop.height * scale)),
+  )
+}
+
+function footAnchorIsInsideCrop(anchor) {
+  return Boolean(
+    anchor &&
+      anchor.x >= crop.x &&
+      anchor.x <= crop.x + crop.width &&
+      anchor.y >= crop.y &&
+      anchor.y <= crop.y + crop.height,
+  )
+}
+
+function selectedFootAnchorIssues(targetActions = visibleActions.value) {
+  const collections = new Map()
+  for (const action of targetActions) {
+    const collectionId = action.collectionId || action.characterId
+    if (!collections.has(collectionId)) collections.set(collectionId, action)
+  }
+  return [...collections.values()].flatMap((action) => {
+    const anchor = footAnchorForAction(action)
+    if (!anchor) return [`${action.characterName} 未定义脚底锚点`]
+    if (!footAnchorIsInsideCrop(anchor)) return [`${action.characterName} 的脚底锚点在裁剪框外`]
+    return []
+  })
 }
 
 function framesForAction(action) {
@@ -347,8 +458,9 @@ function applyMotionTransform(ctx, action) {
   ) {
     return
   }
-  const pivotX = crop.x + crop.width / 2
-  const pivotY = crop.y + crop.height
+  const footAnchor = footAnchorForAction(action)
+  const pivotX = footAnchor?.x ?? crop.x + crop.width / 2
+  const pivotY = footAnchor?.y ?? crop.y + crop.height
   ctx.translate(pivotX + transform.x, pivotY + transform.y)
   ctx.rotate((transform.rotation * Math.PI) / 180)
   ctx.scale(transform.scale, transform.scale)
@@ -455,6 +567,42 @@ function drawCropOverlay(ctx) {
   for (const [x, y] of handlePoints()) {
     ctx.fillRect(x - size / 2, y - size / 2, size, size)
   }
+  drawFootAnchorOverlay(ctx)
+  ctx.restore()
+}
+
+function drawFootAnchorOverlay(ctx) {
+  const anchor = activeFootAnchor.value
+  if (!anchor) return
+
+  const insideCrop =
+    anchor.x >= crop.x &&
+    anchor.x <= crop.x + crop.width &&
+    anchor.y >= crop.y &&
+    anchor.y <= crop.y + crop.height
+  ctx.save()
+  ctx.translate(anchor.x, anchor.y)
+  ctx.strokeStyle = insideCrop ? '#d5ff53' : '#ff836f'
+  ctx.fillStyle = '#141513'
+  ctx.lineWidth = footAnchorEditMode.value ? 3 : 2
+  ctx.setLineDash([])
+  ctx.beginPath()
+  ctx.arc(0, 0, footAnchorEditMode.value ? 10 : 8, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.moveTo(-15, 0)
+  ctx.lineTo(15, 0)
+  ctx.moveTo(0, -15)
+  ctx.lineTo(0, 15)
+  ctx.stroke()
+  ctx.fillStyle = insideCrop ? '#d5ff53' : '#ff836f'
+  ctx.beginPath()
+  ctx.moveTo(-5, 5)
+  ctx.lineTo(5, 5)
+  ctx.lineTo(0, 12)
+  ctx.closePath()
+  ctx.fill()
   ctx.restore()
 }
 
@@ -501,6 +649,16 @@ function hitTest(point) {
 function onPointerDown(event) {
   if (isBusy.value) return
   const point = pointerPosition(event)
+  if (footAnchorEditMode.value) {
+    interaction = {
+      type: 'foot-anchor',
+      start: point,
+    }
+    setActiveCollectionFootAnchor(point)
+    canvasRef.value.setPointerCapture(event.pointerId)
+    drawStage()
+    return
+  }
   interaction = {
     type: hitTest(point),
     start: point,
@@ -519,6 +677,11 @@ function onPointerDown(event) {
 function onPointerMove(event) {
   if (!interaction) return
   const point = pointerPosition(event)
+  if (interaction.type === 'foot-anchor') {
+    setActiveCollectionFootAnchor(point)
+    drawStage()
+    return
+  }
   const dx = point.x - interaction.start.x
   const dy = point.y - interaction.start.y
   const original = interaction.original
@@ -549,8 +712,14 @@ function onPointerMove(event) {
 
 function onPointerUp(event) {
   if (!interaction) return
+  const completedType = interaction.type
   interaction = null
   canvasRef.value.releasePointerCapture(event.pointerId)
+  if (completedType === 'foot-anchor') {
+    footAnchorEditMode.value = false
+    statusMessage.value = `已为 ${activeAction.value.characterName} 定义脚底锚点`
+    drawStage()
+  }
   persistState()
 }
 
@@ -801,6 +970,55 @@ function sanitizeCrop() {
   persistState()
 }
 
+function toggleFootAnchorEdit() {
+  footAnchorEditMode.value = !footAnchorEditMode.value
+  isPlaying.value = false
+  statusMessage.value = footAnchorEditMode.value
+    ? '请在画布上点击人物双脚接触地面的位置'
+    : '已取消脚底锚点定义'
+  drawStage()
+}
+
+async function estimateFootAnchorFromFrame() {
+  if (isBusy.value) return
+  analysisProgress.value = 1
+  statusMessage.value = '正在估算当前帧脚底'
+  try {
+    const action = activeAction.value
+    const bounds = boundsForAction(
+      action,
+      await getAlphaBounds(framesForAction(action)[normalizeFrame(action)]),
+    )
+    if (!bounds) throw new Error('当前帧没有可识别的非透明像素')
+    const owner = resolveFrameOwner(action)
+    setActiveCollectionFootAnchor({
+      x: bounds.x + bounds.width / 2 + owner.offsetX,
+      y: bounds.y + bounds.height + owner.offsetY,
+    })
+    statusMessage.value = `已按当前帧估算 ${action.characterName} 的脚底，请在画布上复核`
+    persistState()
+    drawStage()
+  } catch (error) {
+    statusMessage.value = `脚底估算失败：${error.message}`
+  } finally {
+    analysisProgress.value = 0
+  }
+}
+
+function clearActiveFootAnchor() {
+  const collectionId = activeAction.value.collectionId || activeAction.value.characterId
+  for (const action of actions.filter(
+    (candidate) =>
+      (candidate.collectionId || candidate.characterId) === collectionId,
+  )) {
+    action.footAnchor = null
+  }
+  footAnchorEditMode.value = false
+  statusMessage.value = `已清除 ${activeAction.value.characterName} 的脚底锚点`
+  persistState()
+  drawStage()
+}
+
 function setFrame(index) {
   const length = maxFrames.value
   frameIndex.value = ((index % length) + length) % length
@@ -881,10 +1099,11 @@ function applyMotionPreset(preset) {
 
 function serializeMotion(action, scale = 1) {
   const motion = action.motion || createDefaultMotion()
+  const exportedAnchor = exportedFootAnchorForAction(action, scale)
   return {
     enabled: Boolean(motion.enabled),
     wave: 'sine',
-    pivot: { x: 0.5, y: 0 },
+    pivot: exportedAnchor?.pivot || { x: 0.5, y: 0 },
     position: {
       x: Math.round((Number(motion.moveX) || 0) * scale * 1000) / 1000,
       y: Math.round((Number(motion.moveY) || 0) * scale * 1000) / 1000,
@@ -1341,6 +1560,8 @@ async function importFolders(event) {
       existingCharacterIds.set(characterKey, action.characterId)
     }
     action.collectionId = action.characterId
+    const inheritedFootAnchor = footAnchorForAction(action)
+    if (inheritedFootAnchor) action.footAnchor = { ...inheritedFootAnchor }
   }
 
   for (const action of imported) actions.push(reactive(action))
@@ -1416,9 +1637,16 @@ async function exportSelected() {
             scale: exportScale.value,
             compression: pngCompression.value,
           },
+          anchorSchema: 'octant.foot-anchor.v1',
+          anchorCoordinates: {
+            space: 'output-pixels',
+            origin: 'top-left',
+            unityPivotOrigin: 'bottom-left',
+          },
           fps: activeFps.value,
           actions: visibleActions.value.map((action) => {
             const owner = resolveFrameOwner(action)
+            const footAnchor = exportedFootAnchorForAction(action, scale)
             return {
               project: action.projectName,
               character: action.characterName,
@@ -1429,6 +1657,7 @@ async function exportSelected() {
               frames: framesForAction(action).length,
               mirroredFrom: action.mirroredFromName || null,
               bakedFlipX: Boolean(action.mirroredFromId),
+              footAnchor,
               motion: serializeMotion(action, scale),
             }
           }),
@@ -1502,6 +1731,11 @@ async function encodeCanvasPng(canvas) {
 
 async function exportUnityAtlas() {
   if (isBusy.value || !visibleActions.value.length) return
+  const anchorIssues = selectedFootAnchorIssues()
+  if (anchorIssues.length) {
+    statusMessage.value = `无法导出 Unity 图集：${anchorIssues.join('；')}`
+    return
+  }
   exportKind.value = 'atlas'
   exportProgress.value = 1
   isPlaying.value = false
@@ -1562,6 +1796,10 @@ async function exportUnityAtlas() {
     sheetLines.push(
       `# action;${safeSheetValue(action.id)};${safeSheetValue(action.projectName)};${safeSheetValue(action.characterName)};${safeSheetValue(action.name)};fps=${actionFps}`,
     )
+    const footAnchor = exportedFootAnchorForAction(action, scale)
+    sheetLines.push(
+      `# anchor;${safeSheetValue(action.id)};x=${formatTpsheetNumber(footAnchor.pixel.x, 3)};y=${formatTpsheetNumber(footAnchor.pixel.y, 3)};space=output-pixels;origin=top-left;pivot=${formatTpsheetNumber(footAnchor.pivot.x)},${formatTpsheetNumber(footAnchor.pivot.y)}`,
+    )
   }
   for (const action of selected.filter((item) => item.mirroredFromId)) {
     const owner = resolveFrameOwner(action)
@@ -1570,7 +1808,7 @@ async function exportUnityAtlas() {
   for (const action of selected.filter((item) => item.motion?.enabled)) {
     const motion = serializeMotion(action, scale)
     sheetLines.push(
-      `# motion;${safeSheetValue(action.id)};x=${motion.position.x};y=${motion.position.y};rotation=${motion.rotationDegrees};scale=${motion.scalePercent};duration=${motion.durationSeconds};phase=${motion.phaseDegrees};wave=sine;pivot=0.5,0`,
+      `# motion;${safeSheetValue(action.id)};x=${motion.position.x};y=${motion.position.y};rotation=${motion.rotationDegrees};scale=${motion.scalePercent};duration=${motion.durationSeconds};phase=${motion.phaseDegrees};wave=sine;pivot=${formatTpsheetNumber(motion.pivot.x)},${formatTpsheetNumber(motion.pivot.y)}`,
     )
   }
 
@@ -1609,8 +1847,9 @@ async function exportUnityAtlas() {
     for (const frame of logicalFrames) {
       const rect = rectByPhysicalKey.get(frame.physicalKey)
       const spriteName = `${frame.action.id.replaceAll('-', '_')}_${String(frame.index + 1).padStart(3, '0')}`
+      const footAnchor = exportedFootAnchorForAction(frame.action, scale)
       sheetLines.push(
-        `${spriteName};${rect.x};${rect.y};${outputWidth};${outputHeight};0.5;0`,
+        `${spriteName};${rect.x};${rect.y};${outputWidth};${outputHeight};${formatTpsheetNumber(footAnchor.pivot.x)};${formatTpsheetNumber(footAnchor.pivot.y)}`,
       )
     }
 
@@ -1667,6 +1906,7 @@ function persistState() {
         id,
         offsetX,
         offsetY,
+        footAnchor,
         motion,
         fps,
         opacity,
@@ -1686,6 +1926,7 @@ function persistState() {
         id,
         offsetX,
         offsetY,
+        footAnchor: footAnchor ? { ...footAnchor } : null,
         motion: { ...createDefaultMotion(), ...(motion || {}) },
         fps,
         opacity,
@@ -1764,6 +2005,7 @@ function resetProject() {
     }
     action.offsetX = 0
     action.offsetY = 0
+    action.footAnchor = action.imported ? null : { x: 413, y: 411 }
     Object.assign(action.motion, createDefaultMotion())
     action.fps = DEFAULT_FPS
     action.visible = action.id === 'down'
@@ -1826,6 +2068,8 @@ watch(
       action.visible,
       action.offsetX,
       action.offsetY,
+      action.footAnchor?.x,
+      action.footAnchor?.y,
       action.opacity,
       action.frames.length,
       action.flipX,
@@ -1890,6 +2134,8 @@ watch(
         action.visible,
         action.offsetX,
         action.offsetY,
+        action.footAnchor?.x,
+        action.footAnchor?.y,
         action.opacity,
         action.flipX,
         action.mirroredFromId,
@@ -2198,7 +2444,10 @@ onBeforeUnmount(() => {
         <div ref="stageRef" class="stage-viewport">
           <div
             class="canvas-wrap"
-            :class="`background-${stageBackground}`"
+            :class="[
+              `background-${stageBackground}`,
+              { 'defining-foot-anchor': footAnchorEditMode },
+            ]"
             :style="{ width: `${SOURCE_WIDTH * zoom}px`, height: `${SOURCE_HEIGHT * zoom}px` }"
           >
             <canvas
@@ -2211,6 +2460,9 @@ onBeforeUnmount(() => {
               @pointercancel="onPointerUp"
             ></canvas>
             <div class="canvas-label source-label">原图 {{ SOURCE_WIDTH }} × {{ SOURCE_HEIGHT }}</div>
+            <div v-if="footAnchorEditMode" class="canvas-label anchor-mode-label">
+              点击或拖动到双脚接地点
+            </div>
             <div class="canvas-label crop-label">{{ cropRatio }}</div>
           </div>
         </div>
@@ -2477,6 +2729,92 @@ onBeforeUnmount(() => {
               <strong>{{ activeAction.name }}</strong>
             </div>
             <PhCrosshairSimple :size="21" />
+          </div>
+
+          <div
+            class="foot-anchor-editor"
+            :class="{
+              defined: activeFootAnchor,
+              invalid: activeFootAnchor && !activeFootAnchorInsideCrop,
+            }"
+          >
+            <div class="foot-anchor-heading">
+              <span>
+                <strong>人物共享脚底</strong>
+                <small>{{ activeAction.characterName }} · 所有方向共用</small>
+              </span>
+              <span class="anchor-status">
+                {{
+                  !activeFootAnchor
+                    ? '未定义'
+                    : activeFootAnchorInsideCrop
+                      ? '已定义'
+                      : '裁剪框外'
+                }}
+              </span>
+            </div>
+
+            <div class="field-grid foot-anchor-fields">
+              <label>
+                <span>输出 X</span>
+                <input
+                  v-model.number="footAnchorOutputX"
+                  type="number"
+                  min="0"
+                  :max="scaledCrop.width"
+                  step="0.5"
+                />
+              </label>
+              <label>
+                <span>输出 Y</span>
+                <input
+                  v-model.number="footAnchorOutputY"
+                  type="number"
+                  min="0"
+                  :max="scaledCrop.height"
+                  step="0.5"
+                />
+              </label>
+            </div>
+
+            <div v-if="activeExportedFootAnchor" class="foot-anchor-readout">
+              <span>Unity Pivot</span>
+              <strong>
+                {{ formatTpsheetNumber(activeExportedFootAnchor.pivot.x) }},
+                {{ formatTpsheetNumber(activeExportedFootAnchor.pivot.y) }}
+              </strong>
+            </div>
+
+            <button
+              class="button full-width"
+              :class="{ primary: footAnchorEditMode }"
+              type="button"
+              @click="toggleFootAnchorEdit"
+            >
+              <PhCrosshairSimple :size="18" />
+              {{ footAnchorEditMode ? '正在画布上定义' : '在画布上定义脚底' }}
+            </button>
+            <button
+              class="text-button"
+              type="button"
+              :disabled="isBusy"
+              @click="estimateFootAnchorFromFrame"
+            >
+              按当前帧非透明底边估算
+            </button>
+            <button
+              v-if="activeFootAnchor"
+              class="text-button foot-anchor-clear"
+              type="button"
+              @click="clearActiveFootAnchor"
+            >
+              清除脚底定义
+            </button>
+
+            <p class="safe-operation-note foot-anchor-note">
+              坐标按 {{ exportScale }}% 输出尺寸显示。Unity 图集会把该点写入每帧
+              Pivot 与 anchor 元数据；透明留白变化不会再改变落地点。
+            </p>
           </div>
 
           <div class="field-grid offset-grid">

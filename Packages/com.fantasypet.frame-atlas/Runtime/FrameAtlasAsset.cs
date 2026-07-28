@@ -84,11 +84,15 @@ namespace FrameAtlas
             new List<FrameAtlasActionIndex>();
         [SerializeField] private List<FrameAtlasActionSettings> actionSettings =
             new List<FrameAtlasActionSettings>();
+        [SerializeField] private List<FrameAtlasActionAnchor> actionAnchors =
+            new List<FrameAtlasActionAnchor>();
         [SerializeField] private List<FrameAtlasMirrorMapping> mirrorMappings =
             new List<FrameAtlasMirrorMapping>();
 
         [NonSerialized] private Dictionary<string, FrameAtlasFrame[]> frameLookup;
         [NonSerialized] private Dictionary<string, float> framesPerSecondLookup;
+        [NonSerialized] private Dictionary<string, FrameAtlasActionAnchor>
+            anchorLookup;
         [NonSerialized] private Dictionary<string, FrameAtlasMirrorMapping>
             mirrorLookup;
 
@@ -137,6 +141,12 @@ namespace FrameAtlas
         public IReadOnlyList<FrameAtlasActionSettings> ActionSettings
         {
             get { return actionSettings; }
+        }
+
+        /// <summary>配置文件中显式声明的动作脚底锚点。</summary>
+        public IReadOnlyList<FrameAtlasActionAnchor> ActionAnchors
+        {
+            get { return actionAnchors; }
         }
 
         /// <summary>全部镜像方向映射。</summary>
@@ -202,6 +212,27 @@ namespace FrameAtlas
                    mapping.FlipX;
         }
 
+        /// <summary>
+        /// 尝试取得动作的显式脚底锚点。镜像目标未单独声明时会继承来源动作。
+        /// </summary>
+        public bool TryGetFootAnchor(
+            string actionId,
+            out FrameAtlasActionAnchor anchor)
+        {
+            EnsureLookup();
+            var normalized = NormalizeActionId(actionId);
+            if (anchorLookup.TryGetValue(normalized, out anchor))
+            {
+                return true;
+            }
+
+            FrameAtlasMirrorMapping mapping;
+            return mirrorLookup.TryGetValue(normalized, out mapping) &&
+                   anchorLookup.TryGetValue(
+                       mapping.SourceActionId,
+                       out anchor);
+        }
+
         /// <summary>取得动作真正复用的来源动作 ID。</summary>
         public string GetSourceAction(string actionId)
         {
@@ -231,6 +262,7 @@ namespace FrameAtlas
             List<FrameAtlasFrame> importedFrames,
             List<FrameAtlasActionIndex> importedActionIndices,
             List<FrameAtlasActionSettings> importedActionSettings,
+            List<FrameAtlasActionAnchor> importedActionAnchors,
             List<FrameAtlasMirrorMapping> importedMirrorMappings)
         {
             texture = importedTexture;
@@ -245,10 +277,14 @@ namespace FrameAtlas
             actionSettings =
                 importedActionSettings ??
                 new List<FrameAtlasActionSettings>();
+            actionAnchors =
+                importedActionAnchors ??
+                new List<FrameAtlasActionAnchor>();
             mirrorMappings =
                 importedMirrorMappings ?? new List<FrameAtlasMirrorMapping>();
             frameLookup = null;
             framesPerSecondLookup = null;
+            anchorLookup = null;
             mirrorLookup = null;
         }
 
@@ -256,6 +292,7 @@ namespace FrameAtlas
         {
             frameLookup = null;
             framesPerSecondLookup = null;
+            anchorLookup = null;
             mirrorLookup = null;
         }
 
@@ -263,6 +300,7 @@ namespace FrameAtlas
         {
             if (frameLookup != null &&
                 framesPerSecondLookup != null &&
+                anchorLookup != null &&
                 mirrorLookup != null)
             {
                 return;
@@ -301,6 +339,19 @@ namespace FrameAtlas
                 {
                     framesPerSecondLookup[settings.ActionId] =
                         settings.FramesPerSecond;
+                }
+            }
+
+            anchorLookup =
+                new Dictionary<string, FrameAtlasActionAnchor>(
+                    StringComparer.Ordinal);
+            for (var i = 0; i < actionAnchors.Count; i++)
+            {
+                var anchor = actionAnchors[i];
+                if (anchor != null &&
+                    !string.IsNullOrEmpty(anchor.ActionId))
+                {
+                    anchorLookup[anchor.ActionId] = anchor;
                 }
             }
 

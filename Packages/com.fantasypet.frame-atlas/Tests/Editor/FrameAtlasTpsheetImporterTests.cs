@@ -43,6 +43,10 @@ namespace FrameAtlas.Tests
                 ":action-fps=left;7\n" +
                 ":action-fps=right;15\n" +
                 "# mirror;right;left;flipX=true\n" +
+                "# anchor;left;x=1.5;y=4;space=output-pixels;" +
+                "origin=top-left;pivot=0.5,0\n" +
+                "# anchor;right;x=1.5;y=4;space=output-pixels;" +
+                "origin=top-left;pivot=0.5,0\n" +
                 "left_010;1;1;3;4;0.5;0\n" +
                 "left_002;1;1;3;4;0.5;0\n" +
                 "right_001;1;1;3;4;0.5;0\n");
@@ -80,6 +84,16 @@ namespace FrameAtlas.Tests
             Assert.That(
                 atlas.GetSourceAction("right"),
                 Is.EqualTo("left"));
+            FrameAtlasActionAnchor footAnchor;
+            Assert.That(
+                atlas.TryGetFootAnchor("right", out footAnchor),
+                Is.True);
+            Assert.That(
+                footAnchor.OutputPixel,
+                Is.EqualTo(new Vector2(1.5f, 4f)));
+            Assert.That(
+                footAnchor.NormalizedPivot,
+                Is.EqualTo(new Vector2(0.5f, 0f)));
 
             var playerObject = new GameObject("FrameAtlasPlayerTest");
             try

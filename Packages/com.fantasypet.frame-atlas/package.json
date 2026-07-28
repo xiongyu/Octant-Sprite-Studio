@@ -1,8 +1,8 @@
 {
   "name": "com.fantasypet.frame-atlas",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "Fantasy Pet Frame Atlas",
-  "description": "Runtime data model and parser for validated .tpsheet frame atlases, with an optional Unity Editor importer.",
+  "description": "Runtime data model and parser for validated .tpsheet frame atlases with explicit foot anchors and an optional Unity Editor importer.",
   "unity": "2022.3",
   "keywords": [
     "2d",

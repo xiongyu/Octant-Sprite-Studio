@@ -36,8 +36,9 @@
 :size=512x512
 :fps=12
 :action-fps=walk;10
+# anchor;walk;x=32;y=60;space=output-pixels;origin=top-left;pivot=0.5,0.0625
 # mirror;right;left;flipX=true
-walk_001;0;0;64;64;0.5;0
+walk_001;0;0;64;64;0.5;0.0625
 ```
 
 帧字段依次为：
@@ -46,6 +47,10 @@ walk_001;0;0;64;64;0.5;0
 
 坐标原点按图像左上角解析；`ToUnityRect` 会转换为 Unity 左下角坐标。
 帧名必须以数字帧号结尾，例如 `walk_001`。动作 ID 会转换为小写连字符形式。
+
+`# anchor` 保存动作在输出帧中的显式脚底点。`x/y` 使用左上角像素坐标，
+`pivot` 使用 Unity 左下角归一化坐标；解析器会验证它们彼此一致，并验证同动作
+每帧的 Pivot 都与该脚底点一致。旧文件可以不含此注释。
 
 ## 运行时解析示例
 
@@ -71,5 +76,11 @@ void Start()
 {
     var frames = atlas.GetFrames("walk");
     var fps = atlas.GetFramesPerSecond("walk");
+    FrameAtlasActionAnchor footAnchor;
+    if (atlas.TryGetFootAnchor("walk", out footAnchor))
+    {
+        UnityEngine.Debug.Log(
+            $"Foot: {footAnchor.OutputPixel}, Pivot: {footAnchor.NormalizedPivot}");
+    }
 }
 ```

@@ -96,6 +96,48 @@ namespace FrameAtlas.Tests
         }
 
         [Test]
+        public void ParsesAndValidatesExplicitFootAnchor()
+        {
+            var document = FrameAtlasTpsheetParser.Parse(
+                Header +
+                "# anchor;down;x=15;y=30;space=output-pixels;" +
+                "origin=top-left;pivot=0.5,0.25\n" +
+                "down_001;1;1;30;40;0.5;0.25\n",
+                "anchor.tpsheet");
+
+            Assert.That(document.ActionAnchors.Count, Is.EqualTo(1));
+            Assert.That(
+                document.ActionAnchors[0].ActionId,
+                Is.EqualTo("down"));
+            Assert.That(
+                document.ActionAnchors[0].PixelPosition,
+                Is.EqualTo(new UnityEngine.Vector2(15f, 30f)));
+            Assert.That(
+                document.ActionAnchors[0].NormalizedPivot,
+                Is.EqualTo(new UnityEngine.Vector2(0.5f, 0.25f)));
+        }
+
+        [Test]
+        public void RejectsAnchorThatDisagreesWithFramePivot()
+        {
+            var exception = Assert.Throws<FrameAtlasTpsheetParseException>(
+                delegate
+                {
+                    FrameAtlasTpsheetParser.Parse(
+                        Header +
+                        "# anchor;down;x=15;y=30;" +
+                        "space=output-pixels;origin=top-left;" +
+                        "pivot=0.5,0.25\n" +
+                        "down_001;1;1;30;40;0.5;0\n",
+                        "anchor-mismatch.tpsheet");
+                });
+
+            Assert.That(
+                exception.Message,
+                Does.Contain("脚底锚点、声明 Pivot 与帧 Pivot 不一致"));
+        }
+
+        [Test]
         public void AllowsTwoNamesToShareOneRectangle()
         {
             var document = FrameAtlasTpsheetParser.Parse(
