@@ -39,12 +39,8 @@ const MIRROR_PAIR_CONFIGS = [
   { id: 'down-diagonal', label: '下斜向', leftId: 'down-left', rightId: 'down-right', leftLabel: '左下', rightLabel: '右下' },
 ]
 const INSPECTOR_PANELS = [
-  { id: 'crop', label: '裁剪', icon: PhFrameCorners },
-  { id: 'alignment', label: '对齐', icon: PhCrosshairSimple },
-  { id: 'motion', label: '动态', icon: PhWaveSine },
-  { id: 'mirror', label: '镜像', icon: PhArrowsOutCardinal },
-  { id: 'export', label: '导出', icon: PhSlidersHorizontal },
-  { id: 'thinning', label: '减帧', icon: PhScissors },
+  { id: 'general', label: '常规' },
+  { id: 'motion', label: '动态' },
 ]
 const INSPECTOR_PANEL_META = Object.fromEntries(
   INSPECTOR_PANELS.map(({ id, label }) => [id, { id, label }]),
@@ -603,25 +599,20 @@ function createDockPreset(preset) {
   if (preset === 'columns') {
     return createDockSplit(
       'horizontal',
-      createDockGroup(['crop', 'alignment', 'motion'], 'crop'),
-      createDockGroup(['mirror', 'export', 'thinning'], 'export'),
+      createDockGroup(['general']),
+      createDockGroup(['motion']),
       0.5,
     )
   }
   if (preset === 'workspace') {
     return createDockSplit(
-      'horizontal',
-      createDockGroup(['crop', 'alignment'], 'crop'),
-      createDockSplit(
-        'vertical',
-        createDockGroup(['motion', 'mirror'], 'motion'),
-        createDockGroup(['export', 'thinning'], 'export'),
-        0.48,
-      ),
-      0.48,
+      'vertical',
+      createDockGroup(['general']),
+      createDockGroup(['motion']),
+      0.58,
     )
   }
-  return createDockGroup(INSPECTOR_PANEL_IDS, 'crop')
+  return createDockGroup(INSPECTOR_PANEL_IDS, 'general')
 }
 
 function cloneDockLayout(layout) {
@@ -700,7 +691,11 @@ function isValidDockLayout(layout) {
 function setDockPreset(preset) {
   dockLayout.value = createDockPreset(preset)
   dockRenderKey.value += 1
-  const labels = { tabs: '全部面板已合并为标签', columns: '已切换为双列布局', workspace: '已恢复工作台布局' }
+  const labels = {
+    tabs: '常规与动态已合并为标签',
+    columns: '已切换为左右布局',
+    workspace: '已切换为上下布局',
+  }
   statusMessage.value = labels[preset] || labels.tabs
   persistState()
 }
@@ -2252,17 +2247,17 @@ onBeforeUnmount(() => {
             <span>拖动标签到上下左右或中央</span>
           </div>
           <div class="dock-layout-presets" aria-label="布局预设">
-            <button type="button" title="全部合并为标签" @click="setDockPreset('tabs')">
+            <button type="button" title="常规与动态合并为标签" @click="setDockPreset('tabs')">
               <PhTabs :size="15" />
               合并
             </button>
-            <button type="button" title="双列停靠布局" @click="setDockPreset('columns')">
+            <button type="button" title="常规与动态左右停靠" @click="setDockPreset('columns')">
               <PhSquaresFour :size="15" />
-              双列
+              左右
             </button>
-            <button type="button" title="左右加上下分割布局" @click="setDockPreset('workspace')">
+            <button type="button" title="常规与动态上下停靠" @click="setDockPreset('workspace')">
               <PhArrowCounterClockwise :size="15" />
-              工作台
+              上下
             </button>
           </div>
         </div>
@@ -2279,7 +2274,7 @@ onBeforeUnmount(() => {
           @resize-split="resizeDockSplit"
         />
 
-        <Teleport :key="`dock-crop-${dockRenderKey}`" defer to="#dock-panel-host-crop">
+        <Teleport :key="`dock-general-a-${dockRenderKey}`" defer to="#dock-panel-host-general">
         <section class="inspector-section">
           <div class="section-title">
             <div>
@@ -2334,9 +2329,6 @@ onBeforeUnmount(() => {
             <input v-model="showGuides" class="switch" type="checkbox" />
           </label>
         </section>
-        </Teleport>
-
-        <Teleport :key="`dock-mirror-${dockRenderKey}`" defer to="#dock-panel-host-mirror">
         <section class="inspector-section mirror-policy-section">
           <div class="section-title">
             <div>
@@ -2378,9 +2370,6 @@ onBeforeUnmount(() => {
             播放镜像方向时需要设置 SpriteRenderer.flipX。
           </p>
         </section>
-        </Teleport>
-
-        <Teleport :key="`dock-export-${dockRenderKey}`" defer to="#dock-panel-host-export">
         <section class="inspector-section export-settings-section">
           <div class="section-title">
             <div>
@@ -2481,9 +2470,6 @@ onBeforeUnmount(() => {
             {{ compressionDescription }} 只影响导出的 PNG 与图集，不会修改本地素材。
           </p>
         </section>
-        </Teleport>
-
-        <Teleport :key="`dock-alignment-${dockRenderKey}`" defer to="#dock-panel-host-alignment">
         <section class="inspector-section alignment-section">
           <div class="section-title">
             <div>
@@ -2605,7 +2591,7 @@ onBeforeUnmount(() => {
         </section>
         </Teleport>
 
-        <Teleport :key="`dock-thinning-${dockRenderKey}`" defer to="#dock-panel-host-thinning">
+        <Teleport :key="`dock-general-b-${dockRenderKey}`" defer to="#dock-panel-host-general">
         <section class="inspector-section thinning-section">
           <div class="section-title">
             <div>

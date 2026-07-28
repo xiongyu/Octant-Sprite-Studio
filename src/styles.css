@@ -1130,8 +1130,16 @@ body.is-resizing-dock .dock-splitter::after {
 }
 
 .dock-panel-host > .inspector-section {
-  min-height: 100%;
+  min-height: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.dock-panel-host > .inspector-section:last-child {
   border-bottom: 0;
+}
+
+#dock-panel-host-motion > .inspector-section {
+  min-height: 100%;
 }
 
 .dock-group.is-drop-target .dock-group-tabs {
