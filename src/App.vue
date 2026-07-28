@@ -20,7 +20,9 @@ import {
   PhPlay,
   PhScissors,
   PhSlidersHorizontal,
+  PhSquaresFour,
   PhStack,
+  PhTabs,
   PhWaveSine,
 } from '@phosphor-icons/vue'
 import { createBuiltInActions, createDefaultMotion, createImportedActions } from './assets'
@@ -34,6 +36,14 @@ const MIRROR_PAIR_CONFIGS = [
   { id: 'horizontal', label: '水平', leftId: 'left', rightId: 'right', leftLabel: '左', rightLabel: '右' },
   { id: 'up-diagonal', label: '上斜向', leftId: 'up-left', rightId: 'up-right', leftLabel: '左上', rightLabel: '右上' },
   { id: 'down-diagonal', label: '下斜向', leftId: 'down-left', rightId: 'down-right', leftLabel: '左下', rightLabel: '右下' },
+]
+const INSPECTOR_TABS = [
+  { id: 'crop', label: '裁剪', icon: PhFrameCorners },
+  { id: 'alignment', label: '对齐', icon: PhCrosshairSimple },
+  { id: 'motion', label: '动态', icon: PhWaveSine },
+  { id: 'mirror', label: '镜像', icon: PhArrowsOutCardinal },
+  { id: 'export', label: '导出', icon: PhSlidersHorizontal },
+  { id: 'thinning', label: '减帧', icon: PhScissors },
 ]
 
 const canvasRef = ref(null)
@@ -59,6 +69,8 @@ const previewBytes = ref(0)
 const previewOriginalBytes = ref(0)
 const showOriginalPreview = ref(false)
 const thinInterval = ref(2)
+const inspectorMode = ref('tabs')
+const activeInspectorTab = ref('crop')
 const statusMessage = ref('已载入 8 个方向')
 const crop = reactive({ x: 314, y: 67, width: 198, height: 365 })
 const imageCache = new Map()
@@ -547,6 +559,24 @@ function safeExportName(value, fallback = '未命名') {
 
 function safeSheetValue(value) {
   return String(value || '').replace(/[;\r\n]/g, '_')
+}
+
+function selectInspectorTab(tabId) {
+  activeInspectorTab.value = tabId
+  if (inspectorMode.value !== 'tiled') return
+  nextTick(() => {
+    const pane = document.querySelector(`[data-inspector-pane="${tabId}"]`)
+    pane?.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      block: 'nearest',
+      inline: 'start',
+    })
+  })
+}
+
+function setInspectorMode(mode) {
+  inspectorMode.value = mode === 'tiled' ? 'tiled' : 'tabs'
+  if (inspectorMode.value === 'tiled') selectInspectorTab(activeInspectorTab.value)
 }
 
 function sanitizeCrop() {
@@ -1415,6 +1445,8 @@ function persistState() {
     exportScale: exportScale.value,
     pngCompression: pngCompression.value,
     thinInterval: thinInterval.value,
+    inspectorMode: inspectorMode.value,
+    activeInspectorTab: activeInspectorTab.value,
     actions: actions
       .filter((action) => !action.imported)
       .map(({
@@ -1473,6 +1505,10 @@ function restoreState() {
     exportScale.value = saved.exportScale || 100
     pngCompression.value = saved.pngCompression || 'lossless'
     thinInterval.value = saved.thinInterval || 2
+    inspectorMode.value = saved.inspectorMode === 'tiled' ? 'tiled' : 'tabs'
+    activeInspectorTab.value = INSPECTOR_TABS.some((tab) => tab.id === saved.activeInspectorTab)
+      ? saved.activeInspectorTab
+      : 'crop'
     for (const item of saved.actions || []) {
       const action = actions.find((candidate) => candidate.id === item.id)
       if (action) {
@@ -1591,7 +1627,16 @@ watch(
   { deep: true },
 )
 watch(
-  [loop, stageBackground, showGuides, thinInterval, exportScale, pngCompression],
+  [
+    loop,
+    stageBackground,
+    showGuides,
+    thinInterval,
+    exportScale,
+    pngCompression,
+    inspectorMode,
+    activeInspectorTab,
+  ],
   () => persistState(),
   { deep: true },
 )
@@ -1707,7 +1752,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <main class="workspace">
+    <main class="workspace" :class="{ 'inspector-tiled': inspectorMode === 'tiled' }">
       <aside class="sidebar action-panel">
         <div class="panel-heading">
           <div>
@@ -1967,8 +2012,61 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <aside class="sidebar inspector">
-        <section class="inspector-section">
+      <aside
+        class="sidebar inspector"
+        :class="{ 'is-tiled': inspectorMode === 'tiled' }"
+        aria-label="功能检查器"
+      >
+        <div class="inspector-dockbar">
+          <div class="inspector-dock-title">
+            <strong>检查器</strong>
+            <span>{{ inspectorMode === 'tiled' ? '平铺视图' : '标签视图' }}</span>
+          </div>
+          <div class="inspector-view-switch" aria-label="检查器显示模式">
+            <button
+              type="button"
+              :class="{ active: inspectorMode === 'tabs' }"
+              :aria-pressed="inspectorMode === 'tabs'"
+              title="单标签显示"
+              @click="setInspectorMode('tabs')"
+            >
+              <PhTabs :size="15" />
+              标签
+            </button>
+            <button
+              type="button"
+              :class="{ active: inspectorMode === 'tiled' }"
+              :aria-pressed="inspectorMode === 'tiled'"
+              title="横向平铺全部面板"
+              @click="setInspectorMode('tiled')"
+            >
+              <PhSquaresFour :size="15" />
+              平铺
+            </button>
+          </div>
+          <div class="inspector-tabs" role="tablist" aria-label="检查器功能">
+            <button
+              v-for="tab in INSPECTOR_TABS"
+              :key="tab.id"
+              type="button"
+              role="tab"
+              :class="{ active: activeInspectorTab === tab.id }"
+              :aria-selected="activeInspectorTab === tab.id"
+              @click="selectInspectorTab(tab.id)"
+            >
+              <component :is="tab.icon" :size="14" />
+              {{ tab.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="inspector-content">
+        <section
+          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'crop'"
+          class="inspector-section inspector-pane"
+          data-inspector-pane="crop"
+          role="tabpanel"
+        >
           <div class="section-title">
             <div>
               <span class="panel-kicker">输出区域</span>
@@ -2023,7 +2121,12 @@ onBeforeUnmount(() => {
           </label>
         </section>
 
-        <section class="inspector-section mirror-policy-section">
+        <section
+          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'mirror'"
+          class="inspector-section inspector-pane mirror-policy-section"
+          data-inspector-pane="mirror"
+          role="tabpanel"
+        >
           <div class="section-title">
             <div>
               <span class="panel-kicker">资源复用</span>
@@ -2065,7 +2168,12 @@ onBeforeUnmount(() => {
           </p>
         </section>
 
-        <section class="inspector-section export-settings-section">
+        <section
+          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'export'"
+          class="inspector-section inspector-pane export-settings-section"
+          data-inspector-pane="export"
+          role="tabpanel"
+        >
           <div class="section-title">
             <div>
               <span class="panel-kicker">导出处理</span>
@@ -2166,7 +2274,12 @@ onBeforeUnmount(() => {
           </p>
         </section>
 
-        <section class="inspector-section alignment-section">
+        <section
+          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'alignment'"
+          class="inspector-section inspector-pane alignment-section"
+          data-inspector-pane="alignment"
+          role="tabpanel"
+        >
           <div class="section-title">
             <div>
               <span class="panel-kicker">当前动作</span>
@@ -2218,7 +2331,12 @@ onBeforeUnmount(() => {
           <button class="text-button" type="button" @click="resetOffsets">重置全部偏移</button>
         </section>
 
-        <section class="inspector-section motion-section">
+        <section
+          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'motion'"
+          class="inspector-section inspector-pane motion-section"
+          data-inspector-pane="motion"
+          role="tabpanel"
+        >
           <div class="section-title">
             <div>
               <span class="panel-kicker">运行时效果</span>
@@ -2284,7 +2402,12 @@ onBeforeUnmount(() => {
           </button>
         </section>
 
-        <section class="inspector-section thinning-section">
+        <section
+          v-show="inspectorMode === 'tiled' || activeInspectorTab === 'thinning'"
+          class="inspector-section inspector-pane thinning-section"
+          data-inspector-pane="thinning"
+          role="tabpanel"
+        >
           <div class="section-title">
             <div>
               <span class="panel-kicker">非破坏性处理</span>
@@ -2334,14 +2457,14 @@ onBeforeUnmount(() => {
           >
             恢复所选动作原始帧
           </button>
+          <div class="shortcut-note embedded-shortcuts">
+            <strong>键盘操作</strong>
+            <span><kbd>Space</kbd> 播放 / 暂停</span>
+            <span><kbd>←</kbd><kbd>→</kbd> 切帧</span>
+            <span><kbd>Shift</kbd> + 方向键 微调图层</span>
+          </div>
         </section>
-
-        <section class="shortcut-note">
-          <strong>键盘操作</strong>
-          <span><kbd>Space</kbd> 播放 / 暂停</span>
-          <span><kbd>←</kbd><kbd>→</kbd> 切帧</span>
-          <span><kbd>Shift</kbd> + 方向键 微调图层</span>
-        </section>
+        </div>
       </aside>
     </main>
   </div>
