@@ -1497,7 +1497,9 @@ onBeforeUnmount(() => {
   <div class="app-shell">
     <header class="topbar">
       <div class="brand-block">
-        <div class="brand-mark">逐格</div>
+        <div class="brand-mark">
+          <img src="/branding/octant-icon.png" alt="" />
+        </div>
         <div>
           <h1>Octant Sprite Studio</h1>
           <p>项目化序列裁剪与 Unity 图集工作台</p>

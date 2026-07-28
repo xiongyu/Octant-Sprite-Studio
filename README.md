@@ -1,12 +1,18 @@
 # Octant Sprite Studio
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./public/branding/octant-logo-light.png">
+  <source media="(prefers-color-scheme: light)" srcset="./public/branding/octant-logo-dark.png">
+  <img alt="Octant Sprite Studio Logo" src="./public/branding/octant-logo-dark.png" width="900">
+</picture>
+
 > 中文名：逐格
 
 一个本地优先的多方向 PNG 序列帧工作台，用于管理人物动作、播放预览、裁剪留白、中心校准、非破坏性减帧、方向镜像以及 Unity 图集导出。
 
 ## 运行界面
 
-![Octant Sprite Studio 运行界面](./docs/images/octant-sprite-studio.png)
+![Octant Sprite Studio 运行界面](./docs/images/octant-sprite-studio.jpg)
 
 ## 仓库信息
 
@@ -14,6 +20,8 @@
 - **Product**：Octant Sprite Studio
 - **中文名**：逐格
 - **Description**：A local-first directional sprite sequence editor for cropping, alignment, frame thinning, mirroring, per-action FPS, and Unity atlas export.
+
+品牌资产位于 `public/branding/`，包含透明背景 App Icon，以及适配深色、浅色背景的横版 Logo。
 
 ## 功能
 
