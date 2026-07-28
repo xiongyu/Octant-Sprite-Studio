@@ -4,6 +4,10 @@
 
 一个本地优先的多方向 PNG 序列帧工作台，用于管理人物动作、播放预览、裁剪留白、中心校准、非破坏性减帧、方向镜像以及 Unity 图集导出。
 
+## 运行界面
+
+![Octant Sprite Studio 运行界面](./docs/images/octant-sprite-studio.png)
+
 ## 仓库信息
 
 - **Repository**：`octant-sprite-studio`
